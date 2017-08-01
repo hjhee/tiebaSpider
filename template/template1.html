@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>{{.Title}}</title>
+<script>
+function toggleLzl(thread_id) {
+    var x = document.getElementById('lzl'+ thread_id);
+    if (x.style.display === 'none') {
+        x.style.display = 'block';
+    } else {
+        x.style.display = 'none';
+    }
+}
+</script>
+<style>
+.lzl {
+    border-style: solid;
+    border-width: thin;
+    border-color: #000000;
+}
+</style>
+</head>
+<body>
+{{range .Posts}}
+<div>
+    <div>
+        <div>#{{.PostNO}}: <b>{{.UserName}}</b></div>
+        <div>{{.Content}}</div>
+    </div>
+    {{if index $.Lzls .PostID}}
+    {{$lzl := index $.Lzls .PostID }}
+    <button onclick="toggleLzl({{.PostID}})">Click Me</button>
+    <div id="lzl{{.PostID}}" class="lzl">
+        {{range $lzl.Info}}
+        <div><b>{{.UserName}}</b>: {{.Content}}</div>
+        {{end}}
+    </div>
+    {{end}}
+    <hr />
+</div>
+{{end}}
+</body>
+</html>
