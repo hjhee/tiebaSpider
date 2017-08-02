@@ -1,11 +1,11 @@
 package main
 
 import (
+	"html/template"
 	"io"
 	"log"
-	"html/template"
-	"sync"
 	"sort"
+	"sync"
 )
 
 func generateHTML(w io.Writer, tmpl *template.Template, c *TemplateField) {
@@ -21,21 +21,21 @@ func generateHTML(w io.Writer, tmpl *template.Template, c *TemplateField) {
 			defer wg.Done()
 			done := false
 			for !done {
-				select{
-					case r, ok := <- c.Posts:
-						if !ok {
-							c.Posts = nil
-						} else {
-							posts = append(posts, r)
+				select {
+				case r, ok := <-c.Posts:
+					if !ok {
+						c.Posts = nil
+					} else {
+						posts = append(posts, r)
+					}
+				case r, ok := <-c.Lzls:
+					if !ok {
+						c.Lzls = nil
+					} else {
+						for k, v := range r {
+							lzls[k] = v
 						}
-					case r, ok := <- c.Lzls:
-						if !ok {
-							c.Lzls = nil
-						} else {
-							for k, v := range r {
-								lzls[k] = v
-							}
-						}
+					}
 				}
 				if c.Posts == nil && c.Lzls == nil {
 					done = true
@@ -60,7 +60,7 @@ func generateHTML(w io.Writer, tmpl *template.Template, c *TemplateField) {
 	if err := tmpl.Execute(w, struct {
 		Title string
 		Posts []*OutputField
-		Lzls map[uint64]*LzlComment
+		Lzls  map[uint64]*LzlComment
 	}{Title: "贴吧", Posts: posts, Lzls: lzls}); err != nil {
 		log.Printf("error executing template: %v", err)
 	}

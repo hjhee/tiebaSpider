@@ -1,27 +1,100 @@
 package main
 
 import (
-	"os"
-	"io/ioutil"
-	"strconv"
+	"time"
 	"encoding/json"
-	"html"
-	"github.com/PuerkitoBio/goquery"
-	"math/rand"
-	"html/template"
-	"log"
-	"sync"
 	"errors"
+	"github.com/PuerkitoBio/goquery"
+	"html"
+	"html/template"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"os"
+	"strconv"
+	"sync"
 )
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 func randStringRunes(n int) string {
-    b := make([]rune, n)
-    for i := range b {
-        b[i] = letterRunes[rand.Intn(len(letterRunes))]
-    }
-    return string(b)
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
+func homepageParser(pages *HTMLPage, pc *PageChannel, tempc chan<- *TemplateField) error {
+	log.Printf("[Parser] Got %s\n", pages.URL)
+	pc.Del(1)
+	// close(fetcher)
+	return nil
+}
+
+func pageParser(pages *HTMLPage, pc *PageChannel, tempc chan<- *TemplateField) error {
+	return nil
+}
+
+func commentParser(pages *HTMLPage, pc *PageChannel, tempc chan<- *TemplateField) error {
+	return nil
+}
+
+func htmlParser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *PageChannel, tempc chan<- *TemplateField) {
+	defer wg.Done()
+	var err error
+	for {
+		select {
+		case <-done:
+			return
+		case p, ok := <-pc.rec:
+			if !ok {
+				return
+			}
+			switch p.Type {
+			case HTMLWebHomepage:
+				err = homepageParser(p, pc, tempc)
+				if err != nil {
+					errc <- err
+				}
+			case HTMLWebPage:
+				err = pageParser(p, pc, tempc)
+				if err != nil {
+					errc <- err
+				}
+			case HTMLJson:
+				err = commentParser(p, pc, tempc)
+				if err != nil {
+					errc <- err
+				}
+			default:
+				errc <- errors.New("unkonwn HTMLPage Type")
+			}
+		}
+	}
+}
+
+func parseHTML(done <-chan struct{}, pc *PageChannel) (<-chan *TemplateField, <-chan error) {
+	tempc := make(chan *TemplateField, numGenerator)
+	errc := make(chan error)
+
+	var wg sync.WaitGroup
+	wg.Add(numParser)
+	for i := 0; i < numParser; i++ {
+		go htmlParser(done, errc, &wg, pc, tempc)
+	}
+	go func() {
+		for {
+			if pc.IsDone() {
+				close(pc.send)
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		wg.Wait()
+		close(errc)
+	}()
+	return tempc, errc
 }
 
 func parseHTMLFromFile(filename string) (*TemplateField, chan error) {
@@ -52,6 +125,7 @@ func parseHTMLFromFile(filename string) (*TemplateField, chan error) {
 			title = s.Text()
 			log.Printf("title: %s\n", title)
 		}
+		result.Title = title
 
 		var pageNum uint16
 		if s := doc.Find("span.red").Eq(1); s.Text() == "" {
@@ -85,17 +159,17 @@ func parseHTMLFromFile(filename string) (*TemplateField, chan error) {
 			}
 			threadID := tiebaPost.Content.ThreadID
 			result.Lzls, errc = parseJSONFromFile(threadID, "example/lzl.json")
-			go func () {
+			go func() {
 				done := false
 				for !done {
 					select {
-						case err, ok := <- errc:
-							if !ok {
-								done = true
-							} else {
-								log.Printf("error processing lzl: %v", err)
-								done = true
-							}
+					case err, ok := <-errc:
+						if !ok {
+							done = true
+						} else {
+							log.Printf("error processing lzl: %v", err)
+							done = true
+						}
 					}
 				}
 			}()
@@ -123,7 +197,7 @@ func parseHTMLFromFile(filename string) (*TemplateField, chan error) {
 				res.PostNO = tiebaPost.Content.PostNO
 				res.PostID = tiebaPost.Content.PostID
 				// log.Printf("#%d data-field found: %v\n", i, tiebaPost)
-				// log.Printf("#%d data-field found:\nauthor: %s\ncontent: %s\n", 
+				// log.Printf("#%d data-field found:\nauthor: %s\ncontent: %s\n",
 				// 	tiebaPost.Content.PostNo,
 				// 	tiebaPost.Author.UserName,
 				// 	tiebaPost.Content.Content)
@@ -134,10 +208,10 @@ func parseHTMLFromFile(filename string) (*TemplateField, chan error) {
 		})
 
 		go func() {
-            wg.Wait()
-            close(result.Posts)
+			wg.Wait()
+			close(result.Posts)
 			log.Printf("channel result closed\n")
-        }()
+		}()
 	}()
 	return result, errc
 }
@@ -146,7 +220,7 @@ func parseJSONFromFile(threadID uint64, filename string) (chan map[uint64]*LzlCo
 	log.Printf("thread_id: %d", threadID)
 	ret := make(chan map[uint64]*LzlComment)
 	errc := make(chan error)
-	go func () {
+	go func() {
 		f, err := os.OpenFile(filename, os.O_RDONLY, 0644)
 		defer f.Close()
 		if err != nil {
