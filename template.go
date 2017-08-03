@@ -1,68 +1,65 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
-	"io"
-	"log"
+	"os"
 	"sort"
 	"sync"
 )
 
-func generateHTML(w io.Writer, tmpl *template.Template, c *TemplateField) {
+func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *template.Template) (chan string, chan error) {
+	outputc := make(chan string)
+	errc := make(chan error)
+
 	var wg sync.WaitGroup
-	var posts = make([]*OutputField, 0, 100)
-	var lzls = make(map[uint64]*LzlComment)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		log.Printf("starting HTML generation")
-		wg.Add(1)
+	wg.Add(numRenderer)
+	for i := 0; i < numRenderer; i++ {
 		go func() {
 			defer wg.Done()
-			done := false
-			for !done {
+			for {
 				select {
-				case r, ok := <-c.Posts:
+				case <-done:
+					return
+
+				case t, ok := <-tempc:
 					if !ok {
-						c.Posts = nil
-					} else {
-						posts = append(posts, r)
+						return
 					}
-				case r, ok := <-c.Lzls:
-					if !ok {
-						c.Lzls = nil
-					} else {
-						for k, v := range r {
-							lzls[k] = v
+					filename := fmt.Sprintf("output/file_%s.html", t.Title)
+					err := func(filename string) error {
+						sort.Slice(t.Posts, func(a, b int) bool {
+							return t.Posts[a].PostNO < t.Posts[b].PostNO
+						})
+						f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+						if err != nil {
+							return fmt.Errorf("error creating output file output/file_%s.html: %v", t.Title, err)
 						}
+						defer f.Close()
+						if err := tmpl.Execute(f, struct {
+							Title string
+							Posts []*OutputField
+							Lzls  map[uint64]*LzlComment
+						}{Title: t.Title, Posts: t.Posts, Lzls: t.Lzls.Map}); err != nil {
+							return fmt.Errorf("error executing template: %v", err)
+						}
+						return nil
+					}(filename)
+
+					if err != nil {
+						errc <- err
+						continue
 					}
-				}
-				if c.Posts == nil && c.Lzls == nil {
-					done = true
+
+					outputc <- filename
 				}
 			}
-			sort.Slice(posts, func(a, b int) bool {
-				return posts[a].PostNO < posts[b].PostNO
-			})
 		}()
-		// go func() {
-		// 	wg.Wait()
-		// 	log.Printf("ending HTML generation")
-		// 	tmpl.Execute(o, posts)
-		// }()
-	}()
-	wg.Wait()
-	log.Printf("ending HTML generation")
-	// log.Printf("posts:\n")
-	// for i := range posts {
-	// 	log.Printf("{PostNO:%d,\nUserName:%s,\nContent:%s\n}", posts[i].PostNo, posts[i].UserName, posts[i].Content)
-	// }
-	if err := tmpl.Execute(w, struct {
-		Title string
-		Posts []*OutputField
-		Lzls  map[uint64]*LzlComment
-	}{Title: "贴吧", Posts: posts, Lzls: lzls}); err != nil {
-		log.Printf("error executing template: %v", err)
 	}
-	// tmpl.Execute(w, posts)
+	go func() {
+		wg.Wait()
+		close(errc)
+		close(outputc)
+	}()
+	return outputc, errc
 }

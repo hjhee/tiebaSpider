@@ -3,14 +3,15 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"strings"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +21,7 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 	feed := make(chan *HTMLPage, numFetcher)
 	ret, retErr := spawnFetcher(done, feed)
 
-	pc := &PageChannel{send: feed, rec: ret, mutex: &sync.Mutex{}}
+	pc := &PageChannel{send: feed, rec: ret}
 
 	errc := make(chan error)
 	go func() {
@@ -108,7 +109,7 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 	return pc, errChan
 }
 
-func fetcher(done <-chan struct{}, wg *sync.WaitGroup, mutex *sync.Mutex, jobsLeft *int, ret chan<- *HTMLPage, jobs chan *HTMLPage) {
+func fetcher(done <-chan struct{}, wg *sync.WaitGroup, jobsLeft *int64, ret chan<- *HTMLPage, jobs chan *HTMLPage) {
 	defer wg.Done()
 	for {
 		select {
@@ -118,24 +119,22 @@ func fetcher(done <-chan struct{}, wg *sync.WaitGroup, mutex *sync.Mutex, jobsLe
 			if !ok {
 				return
 			}
-			// err := fetchHTMLFromURL(page)
-			var err error
+			err := fetchHTMLFromURL(page)
+			// err := fetchHTMLFromFile(page) // debug use
 			if err != nil {
 				go func(page *HTMLPage) {
 					select {
 					case <-done:
 						return
-					case <-time.After(10 * time.Second):
+					case <-time.After(3 * time.Second):
 						jobs <- page
 					}
 				}(page)
-				log.Printf("[Fetch] error fetching %s, pause for 10s: %s\n", page.URL, err)
+				log.Printf("[Fetch] error fetching %s, pause for 3s: %s\n", page.URL, err)
 			} else {
 				select {
 				case ret <- page:
-					mutex.Lock()
-					*jobsLeft--
-					mutex.Unlock()
+					atomic.AddInt64(jobsLeft, -1)
 				case <-done:
 					return
 				}
@@ -149,9 +148,8 @@ func spawnFetcher(done <-chan struct{}, jobs <-chan *HTMLPage) (<-chan *HTMLPage
 	ret := make(chan *HTMLPage, numParser)
 	errc := make(chan error)
 
-	jobsLeft := 0
+	jobsLeft := new(int64)
 	chClosed := false
-	var mutex = &sync.Mutex{}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -161,10 +159,7 @@ func spawnFetcher(done <-chan struct{}, jobs <-chan *HTMLPage) (<-chan *HTMLPage
 		defer close(ret)
 		for {
 			if chClosed {
-				mutex.Lock()
-				l := jobsLeft
-				mutex.Unlock()
-				if l <= 0 {
+				if atomic.LoadInt64(jobsLeft) <= 0 {
 					return
 				}
 				time.Sleep(time.Second)
@@ -178,16 +173,14 @@ func spawnFetcher(done <-chan struct{}, jobs <-chan *HTMLPage) (<-chan *HTMLPage
 					chClosed = true
 					continue
 				}
-				mutex.Lock()
-				jobsLeft++
-				mutex.Unlock()
+				atomic.AddInt64(jobsLeft, 1)
 				in <- p
 			}
 		}
 	}()
 	for i := 0; i < numFetcher; i++ {
 		wg.Add(1)
-		go fetcher(done, &wg, mutex, &jobsLeft, ret, in)
+		go fetcher(done, &wg, jobsLeft, ret, in)
 	}
 	go func() {
 		wg.Wait()
@@ -202,7 +195,32 @@ func fetchHTMLFromURL(page *HTMLPage) error {
 		return err
 	}
 	bytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	page.Content = bytes
+	// page.Response = resp
 	resp.Body.Close()
+	return nil
+}
+
+func fetchHTMLFromFile(page *HTMLPage) error {
+	var filename string
+	switch page.Type {
+	case HTMLWebHomepage:
+		filename = "example/content.html"
+	case HTMLWebPage:
+		filename = "example/content1.html"
+	case HTMLJSON:
+		filename = "example/lzl1.json"
+	}
+	in, err := os.OpenFile(filename, os.O_RDONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("Error reading url list: %v", err)
+	}
+	defer in.Close()
+	reader := bufio.NewReader(in)
+	bytes, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return err
 	}

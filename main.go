@@ -8,16 +8,21 @@ import (
 )
 
 const (
-	numFetcher   = 50
-	numParser    = 100
-	numGenerator = 1
+	numFetcher  = 100
+	numParser   = 50
+	numRenderer = 5
 )
 
 var outputTemplate *template.Template
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
-	outputTemplate = template.Must(template.ParseFiles("template/template1.html"))
+	outputTemplate = template.Must(template.New("template1.html").Funcs(
+		template.FuncMap{"convertTime": func(ts int64) string {
+			// Time return formatted time
+			return time.Unix(ts, 0).In(time.Local).Format("2006-01-02 15:04")
+		},
+		}).ParseFiles("template/template1.html"))
 }
 
 func main() {
@@ -25,52 +30,38 @@ func main() {
 	defer close(done)
 
 	pc, errcFetch := fetchHTMLList(done, "url.txt")
-	_, errcParse := parseHTML(done, pc)
-	// outputc, errcGenerate := generateHTML(done, outputTemplate, tempc)
+	tempc, errcParse := parseHTML(done, pc)
+	outputc, errcRender := renderHTML(done, tempc, outputTemplate)
 
 	for {
+		if errcFetch == nil && errcParse == nil && errcRender == nil {
+			log.Printf("Job done!\n")
+			break
+		}
 		select {
 		case err, ok := <-errcFetch:
 			if !ok {
 				errcFetch = nil
-			} else {
-				log.Fatalf("[Fetch] %v\n", err)
+				log.Printf("[Fetch] job done")
+				continue
 			}
+			log.Fatalf("[Fetch] %v\n", err)
 		case err, ok := <-errcParse:
 			if !ok {
 				errcParse = nil
-			} else {
-				log.Fatalf("[Parse] %v\n", err)
+				log.Printf("[Parse] job done")
+				continue
 			}
-			// case err, ok := <-errcGenerate:
-			// 	if !ok {
-			// 		errcGenerate = nil
-			// 	} else {
-			// 		log.Fatalf("[Template] %v\n", err)
-			// 	}
-			// case file := <-outputc:
-			// 	log.Printf("[Template] %s done\n", file)
-			// }
-			// if errcFetch == nil && errcParse == nil && errcGenerate == nil {
-			// 	done = true
-			// 	log.Printf("Job done!\n")
-			// }
-		}
-		if errcFetch == nil && errcParse == nil {
-			log.Printf("Job done!\n")
-			break
+			log.Fatalf("[Parse] %v\n", err)
+		case err, ok := <-errcRender:
+			if !ok {
+				errcRender = nil
+				log.Printf("[Template] job done")
+				continue
+			}
+			log.Printf("[Template] error: %v\n", err)
+		case file := <-outputc:
+			log.Printf("[Template] %s done\n", file)
 		}
 	}
-
-	// if err := fetchURLFromList("url.txt"); err != nil {
-	// 	log.Fatalf("error fetching url from list: %v", err)
-	// }
-	// ch, _ := parseHTMLFromFile("example/content.html")
-
-	// f, err := os.OpenFile("example/example.html", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	// if err != nil {
-	// 	log.Fatal("error creating output file: %v", err)
-	// }
-	// defer f.Close()
-	// generateHTML(f, outputTemplate, ch)
 }

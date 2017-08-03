@@ -24,15 +24,15 @@ function toggleLzl(thread_id) {
 {{range .Posts}}
 <div>
     <div>
-        <div>#{{.PostNO}}: <b>{{.UserName}}</b></div>
+        <div>{{.Time}} #{{.PostNO}}: <b>{{.UserName}}</b></div>
         <div>{{.Content}}</div>
     </div>
     {{if index $.Lzls .PostID}}
     {{$lzl := index $.Lzls .PostID }}
-    <button onclick="toggleLzl({{.PostID}})">Click Me</button>
+    <button onclick="toggleLzl({{ .PostID }})">Click Me</button>
     <div id="lzl{{.PostID}}" class="lzl">
         {{range $lzl.Info}}
-        <div><b>{{.UserName}}</b>: {{.Content}}</div>
+        <div>{{convertTime .Timestamp}} <b>{{.UserName}}</b>: {{.Content}}</div>
         {{end}}
     </div>
     {{end}}

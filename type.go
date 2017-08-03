@@ -5,66 +5,78 @@ import (
 	"html/template"
 	"net/url"
 	"sync"
+	"sync/atomic"
 )
 
+// PageChannel share HTML task between fetcher and parser
 type PageChannel struct {
-	rec <-chan *HTMLPage
+	rec  <-chan *HTMLPage
 	send chan<- *HTMLPage
-	ref int
-	init bool
-	mutex *sync.Mutex
+	ref  int64
+	init int64
 }
 
-func (p *PageChannel) Add(n int) {
-	p.mutex.Lock()
-	p.ref += n
-	p.mutex.Unlock()
+// Add task number
+func (p *PageChannel) Add(n int64) {
+	if n <= 0 {
+		return
+	}
+	atomic.AddInt64(&p.ref, n)
 }
 
-func (p *PageChannel) Del(n int) {
-	p.mutex.Lock()
-	p.ref -= n
-	p.mutex.Unlock()
+// Del task number
+func (p *PageChannel) Del(n int64) {
+	if n <= 0 {
+		return
+	}
+	atomic.AddInt64(&p.ref, -n)
 }
 
-func (p *PageChannel) Ref() int {
-	var r int
-	p.mutex.Lock()
-	r = p.ref
-	p.mutex.Unlock()
-	return r
+// Ref returns task number
+func (p *PageChannel) Ref() int64 {
+	return atomic.LoadInt64(&p.ref)
 }
 
+// Inited returns whether all URLs are read from url.txt
 func (p *PageChannel) Inited() {
-	p.mutex.Lock()
-	p.init = true
-	p.mutex.Unlock()
+	atomic.StoreInt64(&p.init, 1)
 }
 
+// IsDone returns whether all HTML page are fetched
 func (p *PageChannel) IsDone() bool {
-	var r int
-	var d bool
-	p.mutex.Lock()
-	r = p.ref
-	d = p.init
-	p.mutex.Unlock()
-	return r<=0 && d
+	return atomic.LoadInt64(&p.ref) <= 0 && atomic.LoadInt64(&p.init) != 0
 }
 
+// HTMLType tells parser how to parse the HTMLPage
 type HTMLType int
 
 const (
+	// HTMLWebHomepage is the first page of a Tieba post
 	HTMLWebHomepage HTMLType = iota
+
+	// HTMLWebPage is a page of a Tieba post
 	HTMLWebPage
-	HTMLJson
+
+	// HTMLJSON is the Lzl Comment in JSON format
+	HTMLJSON
 )
 
+// HTMLPage is a job for fetcher and parser
 type HTMLPage struct {
-	URL     *url.URL
+	// URL of the Page
+	URL *url.URL
+
+	// Content is the HTML code of the Page
 	Content []byte
-	Type    HTMLType
+
+	// Type indicates different types of Tieba data
+	Type HTMLType
+
+	// Close http.Response when finished parsing
+	// Response *http.Response
 }
 
+// TiebaField parse "data-field" of each thread
 type TiebaField struct {
 	Author struct {
 		UserID   uint64 `json:"user_id"`
@@ -77,7 +89,7 @@ type TiebaField struct {
 		ForumID  uint64 `json:"forum_id"`
 		ThreadID uint64 `json:"thread_id"`
 		Content  string `json:"content"` // 正文内容
-		PostNO   uint32 `json:"post_no"` // 楼数
+		PostNO   uint64 `json:"post_no"` // 楼数
 		// Type string `json:"type"`
 		// CommentNum uint16 `json:"comment_num"`
 		// Props string `json:"props"`
@@ -86,36 +98,143 @@ type TiebaField struct {
 	} `json:"content"`
 }
 
+// LzlField parse Lzl JSON data
 type LzlField struct {
-	ErrNO  int32                      `json:"errno"`
+	ErrNO  int64                      `json:"errno"`
 	ErrMsg string                     `json:"errmsg"`
 	Data   map[string]json.RawMessage `json:"data"`
 }
 
+// LzlContent is a thread of Lzl
 type LzlContent struct {
 	ThreadID  uint64        `json:"thread_id,string"`
 	PostID    uint64        `json:"post_id,string"`
 	CommentID uint64        `json:"comment_id,string"`
 	UserName  string        `json:"username"`
 	Content   template.HTML `json:"content"`
+	Timestamp int64         `json:"now_time"`
 }
 
+// LzlComment indicates the relationship between a Tieba posts and the attached Lzl comment
 type LzlComment struct {
-	Num     uint32       `json:"comment_num"`
-	ListNum uint32       `json:"comment_list_num"`
+	Num     uint64       `json:"comment_num"`
+	ListNum uint64       `json:"comment_list_num"`
 	Info    []LzlContent `json:"comment_info"`
 	// Info []json.RawMessage `json:"comment_info"`
 }
 
+// OutputField render Tieba post in template
 type OutputField struct {
 	UserName string
 	Content  template.HTML
-	PostNO   uint32
+	PostNO   uint64
 	PostID   uint64
+	Time     string
 }
 
+// LzlMap provides a thread safe map insert method
+type LzlMap struct {
+	Map  map[uint64]*LzlComment
+	lock *sync.Mutex
+}
+
+// Insert LzlComment to Map with synchronization
+func (lzl *LzlMap) Insert(k uint64, v *LzlComment) {
+	lzl.lock.Lock()
+	lzl.Map[k] = v
+	lzl.lock.Unlock()
+}
+
+// TemplateField stores all necessary information to render a HTML page
 type TemplateField struct {
-	Title string
-	Posts chan *OutputField
-	Lzls  chan map[uint64]*LzlComment
+	Title     string
+	ThreadID  uint64
+	Posts     []*OutputField
+	PostsLeft int64
+	Lzls      *LzlMap // Key is PostID
+	LzlsLeft  int64
+	mutex     *sync.RWMutex
+	send      bool
+}
+
+// Send parsed Tieba posts to render
+// https://misfra.me/optimizing-concurrent-map-access-in-go/
+func (t *TemplateField) Send(c chan *TemplateField) {
+	t.mutex.RLock()
+	if !t.send {
+		t.mutex.RUnlock()
+		t.mutex.Lock()
+		if !t.send {
+			c <- t
+			t.send = true
+		}
+		t.mutex.Unlock()
+	} else {
+		t.mutex.RUnlock()
+	}
+}
+
+// AddPosts adds the number of Posts to be parsed
+func (t *TemplateField) AddPosts(n int64) {
+	atomic.AddInt64(&t.PostsLeft, n)
+}
+
+// AddLzls adds the number of Lzls to be parsed
+func (t *TemplateField) AddLzls(n int64) {
+	atomic.AddInt64(&t.LzlsLeft, n)
+}
+
+// Append a new post to TemplateField
+func (t *TemplateField) Append(post *OutputField) {
+	t.mutex.Lock()
+	// l := len(t.Posts)
+	// n := l + 1
+	// if n > cap(t.Posts) {
+	// 	newSlice := make([]*OutputField, 30*10+n+1)
+	// 	copy(newSlice, t.Posts)
+	// 	t.Posts = newSlice
+	// }
+	// t.Posts = t.Posts[0:n]
+	// copy(t.Posts[n:n+1], post)
+	t.Posts = append(t.Posts, post)
+	t.mutex.Unlock()
+}
+
+// IsDone returns whether TemplateField is ready to be rendered
+func (t *TemplateField) IsDone() bool {
+	return atomic.LoadInt64(&t.PostsLeft) <= 0 && atomic.LoadInt64(&t.LzlsLeft) <= 0
+}
+
+// TemplateMap manipulate a Tieba thread in parser
+type TemplateMap struct {
+	Map     map[uint64]*TemplateField // Key is ThreadID
+	lock    *sync.RWMutex
+	Channel chan *TemplateField
+}
+
+// Get returns a value from Map with synchronization
+// see: https://misfra.me/optimizing-concurrent-map-access-in-go/ for more detail
+func (tm *TemplateMap) Get(k uint64) *TemplateField {
+	var val *TemplateField
+	var ok bool
+	tm.lock.RLock()
+	if val, ok = tm.Map[k]; !ok {
+		tm.lock.RUnlock()
+		tm.lock.Lock()
+		if val, ok = tm.Map[k]; !ok {
+			val = &TemplateField{
+				Posts: make([]*OutputField, 0, 30),
+				Lzls: &LzlMap{
+					Map:  make(map[uint64]*LzlComment),
+					lock: &sync.Mutex{},
+				},
+				mutex: &sync.RWMutex{},
+			}
+			tm.Map[k] = val
+		}
+		tm.lock.Unlock()
+	} else {
+		tm.lock.RUnlock()
+	}
+	return val
 }
