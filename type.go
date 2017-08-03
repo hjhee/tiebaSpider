@@ -10,9 +10,16 @@ import (
 
 // PageChannel share HTML task between fetcher and parser
 type PageChannel struct {
-	rec  <-chan *HTMLPage
+	// parser get HTML pages from rec
+	rec <-chan *HTMLPage
+
+	// fetcher get URL from send
 	send chan<- *HTMLPage
-	ref  int64
+
+	// number of URL to be fetched and parsed
+	ref int64
+
+	// flag, whether all URLs from list are added to fetcher
 	init int64
 }
 

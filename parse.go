@@ -55,7 +55,11 @@ func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback fun
 			pageNum = 1
 		}
 	}
+	// fetch lzl comments
+	// syntax:
 	// http://tieba.baidu.com/p/totalComment?t=1501582373&tid=3922635509&fid=867983&pn=2&see_lz=0
+	// python爬取贴吧楼中楼
+	// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
 	u := &url.URL{
 		Scheme: "http",
 		Host:   "tieba.baidu.com",
@@ -115,13 +119,13 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 				q.Set("pn", fmt.Sprint(i))
 				u.RawQuery = q.Encode()
 				newPage := &HTMLPage{
-					URL:  u,
+					URL:  u, // example: https://tieba.baidu.com/p/3922635509?pn=2
 					Type: HTMLWebPage,
 				}
 				select {
 				case <-done:
 					return
-				case pc.send <- newPage:
+				case pc.send <- newPage: // add all other pages to fetcher
 				}
 			}
 		}()
@@ -136,11 +140,11 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 
 func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	defer pc.Del(1)
-	log.Printf("[Parse] parsing %s", page.URL.String())
+	// log.Printf("[Parse] parsing %s", page.URL.String())
 	err := htmlParse(pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
 		defer func() {
 			if tf.IsDone() {
-				tf.Send(tmMap.Channel)
+				tf.Send(tmMap.Channel) // avoid duplicate task
 				// tmMap.Channel <- tf
 			}
 		}()
@@ -163,7 +167,10 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 			res.PostNO = tiebaPost.Content.PostNO
 			res.PostID = tiebaPost.Content.PostID
 
-			res.Time = s.Find("div.post-tail-wrap span.tail-info:nth-child(4)").Text() // get post time
+			// get post time
+			// Jquery过滤选择器，选择前几个元素，后几个元素，内容过滤选择器等
+			// http://www.cnblogs.com/alone2015/p/4962687.html
+			res.Time = s.Find("div.post-tail-wrap span.tail-info:nth-child(4)").Text()
 
 			tf.Append(&res)
 			// log.Printf("#%d data-field found: %v\n", i, tiebaPost)
@@ -179,24 +186,25 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 	return err
 }
 
+// parse lzl comment, JSON formatted
 func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	defer pc.Del(1)
 	var threadID uint64
 
 	u := page.URL
 	q := u.Query()
-	if tid := q.Get("tid"); tid == "" {
-		return fmt.Errorf("Error parsing getting tid from %s", page.URL.String())
-	} else {
-		ret, _ := strconv.Atoi(tid)
-		threadID = uint64(ret)
+	tid := q.Get("tid")
+	if tid == "" {
+		return fmt.Errorf("Error parsing getting tid from %s", page.URL.String()) // skip illegal URL
 	}
+	ret, _ := strconv.Atoi(tid)
+	threadID = uint64(ret)
 
 	var tf *TemplateField
 	tf = tmMap.Get(threadID)
 	defer func() {
 		if tf.IsDone() {
-			tf.Send(tmMap.Channel)
+			tf.Send(tmMap.Channel) // avoid duplicate task
 			// tmMap.Channel <- tf
 		}
 	}()
@@ -218,7 +226,6 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 		return nil // comment list empty, stop
 	}
 	comments := make(map[uint64]*LzlComment)
-	// var comments LzlComment
 	err = json.Unmarshal(commentList, &comments)
 	if err != nil {
 		return fmt.Errorf("Error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
@@ -229,7 +236,10 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 	}
 
 	for k, v := range comments {
-		tf.Lzls.Insert(k, v)
+		// merge maps
+		// Getting the union of two maps in go
+		// https://stackoverflow.com/a/22621838/6091246
+		tf.Lzls.Insert(k, v) // merge maps
 	}
 
 	return nil
@@ -244,7 +254,7 @@ func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *Pag
 			return
 		case p, ok := <-pc.rec:
 			if !ok {
-				return
+				return // quit when pc.rec is closed
 			}
 			switch p.Type {
 			case HTMLWebHomepage:
@@ -284,16 +294,16 @@ func parseHTML(done <-chan struct{}, pc *PageChannel) (<-chan *TemplateField, <-
 	}
 	go func() {
 		for {
-			log.Printf("[pc] jobs: %d", pc.Ref())
+			log.Printf("[pc] jobs: %d", pc.Ref()) // status report
 			if pc.IsDone() {
-				close(pc.send)
+				close(pc.send) // no more task, tell fetcher to exit
 				break
 			}
-			time.Sleep(time.Second)
+			time.Sleep(time.Second) // check task number every second
 		}
-		wg.Wait()
+		wg.Wait() // wait parser finish all remaining tasks
 		close(errc)
-		close(tmMap.Channel)
+		close(tmMap.Channel) // all page parsed, tell renderer to exit
 	}()
 	return tmMap.Channel, errc
 }

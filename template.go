@@ -12,6 +12,7 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 	outputc := make(chan string)
 	errc := make(chan error)
 
+	// spawn renderers
 	var wg sync.WaitGroup
 	wg.Add(numRenderer)
 	for i := 0; i < numRenderer; i++ {
@@ -24,7 +25,7 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 
 				case t, ok := <-tempc:
 					if !ok {
-						return
+						return // no new task from parser, exit
 					}
 					filename := fmt.Sprintf("output/file_%s.html", t.Title)
 					err := func(filename string) error {
@@ -51,7 +52,7 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 						continue
 					}
 
-					outputc <- filename
+					outputc <- filename // report finished task
 				}
 			}
 		}()
