@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 )
 
@@ -11,14 +12,23 @@ const (
 	numFetcher  = 100
 	numParser   = 50
 	numRenderer = 5
+
+	templateName = "template1.html"
 )
 
 var outputTemplate *template.Template
 
 func init() {
+	outputPath := "./output"
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		err = os.Mkdir(outputPath, 0644)
+		if err != nil {
+			log.Fatalf("Error creating output folder: %v", err)
+		}
+	}
 	rand.Seed(time.Now().UnixNano())
 	// outputTemplate is used to render output
-	outputTemplate = template.Must(template.New("template1.html").Funcs(
+	outputTemplate = template.Must(template.New(templateName).Funcs(
 		template.FuncMap{"convertTime": func(ts int64) string {
 			// convertTime converts unix timestamp to the following format
 			// How do I format an unix timestamp to RFC3339 - golang?
@@ -31,7 +41,7 @@ func init() {
 			// https://stackoverflow.com/a/20872724/6091246
 			return time.Unix(ts, 0).In(time.Local).Format("2006-01-02 15:04")
 		},
-		}).ParseFiles("template/template1.html"))
+		}).ParseFiles("template/" + templateName))
 }
 
 func main() {
