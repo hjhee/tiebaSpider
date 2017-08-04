@@ -66,6 +66,9 @@ const (
 
 	// HTMLJSON is the Lzl Comment in JSON format
 	HTMLJSON
+
+	// HTMLLocal is a local HTML or JSON file
+	HTMLLocal
 )
 
 // HTMLPage is a job for fetcher and parser
@@ -157,9 +160,9 @@ type TemplateField struct {
 	Title     string
 	ThreadID  uint64
 	Posts     []*OutputField
-	PostsLeft int64
+	postsLeft int64
 	Lzls      *LzlMap // Key is PostID
-	LzlsLeft  int64
+	lzlsLeft  int64
 	mutex     *sync.RWMutex
 	send      bool
 }
@@ -183,12 +186,12 @@ func (t *TemplateField) Send(c chan *TemplateField) {
 
 // AddPosts adds the number of Posts to be parsed
 func (t *TemplateField) AddPosts(n int64) {
-	atomic.AddInt64(&t.PostsLeft, n)
+	atomic.AddInt64(&t.postsLeft, n)
 }
 
 // AddLzls adds the number of Lzls to be parsed
 func (t *TemplateField) AddLzls(n int64) {
-	atomic.AddInt64(&t.LzlsLeft, n)
+	atomic.AddInt64(&t.lzlsLeft, n)
 }
 
 // Append a new post to TemplateField
@@ -209,7 +212,58 @@ func (t *TemplateField) Append(post *OutputField) {
 
 // IsDone returns whether TemplateField is ready to be rendered
 func (t *TemplateField) IsDone() bool {
-	return atomic.LoadInt64(&t.PostsLeft) <= 0 && atomic.LoadInt64(&t.LzlsLeft) <= 0
+	return atomic.LoadInt64(&t.postsLeft) <= 0 && atomic.LoadInt64(&t.lzlsLeft) <= 0
+}
+
+// Merge consecutive posts whose Useaname is the same
+func (t *TemplateField) Merge() {
+	l := len(t.Posts)
+	for i := 0; i+1 < l; i++ {
+		if t.Posts[i+1].UserName != t.Posts[i].UserName {
+			continue
+		}
+		v, ok := t.Lzls.Map[t.Posts[i+1].PostID]
+		if ok && v.ListNum != 0 && v.Num != 0 {
+			continue
+		}
+		v, ok = t.Lzls.Map[t.Posts[i].PostID]
+		if ok && v.ListNum != 0 && v.Num != 0 {
+			continue
+		}
+		// How to efficiently concatenate strings in Go?
+		// https://stackoverflow.com/a/43675122/6091246
+		bs := make([]byte, len(t.Posts[i].Content)+len(t.Posts[i+1].Content)+1)
+		bl := 0
+		bl += copy(bs[bl:], t.Posts[i].Content)
+		bs[bl] = '\n'
+		bl++
+		bl += copy(bs[bl:], t.Posts[i+1].Content)
+		t.Posts[i].Content = template.HTML(bs)
+		// t.Posts[i].Content = t.Posts[i].Content + "\n" + t.Posts[i+1].Content
+		// removes duplicate values in given slice
+		// https://gist.github.com/alioygur/16c66b4249cb42715091fe010eec7e33#file-unique_slice-go-L13
+		t.Posts = append(t.Posts[:i+1], t.Posts[i+2:]...)
+		i--
+		l--
+	}
+}
+
+// Unique removes any duplicate posts
+// naive
+func (t *TemplateField) Unique() {
+	// Idiomatic way to remove duplicates in a slice
+	// https://www.reddit.com/r/golang/comments/5ia523/idiomatic_way_to_remove_duplicates_in_a_slice/db6qa2e/
+	seen := make(map[template.HTML]struct{}, len(t.Posts))
+	j := 0
+	for _, v := range t.Posts {
+		if _, ok := seen[v.Content]; ok {
+			continue
+		}
+		seen[v.Content] = struct{}{}
+		t.Posts[j] = v
+		j++
+	}
+	t.Posts = t.Posts[:j]
 }
 
 // TemplateMap manipulate a Tieba thread in parser
@@ -230,7 +284,8 @@ func (tm *TemplateMap) Get(k uint64) *TemplateField {
 		tm.lock.Lock()
 		if val, ok = tm.Map[k]; !ok {
 			val = &TemplateField{
-				Posts: make([]*OutputField, 0, 30),
+				ThreadID: k,
+				Posts:    make([]*OutputField, 0, 30),
 				Lzls: &LzlMap{
 					Map:  make(map[uint64]*LzlComment),
 					lock: &sync.Mutex{},

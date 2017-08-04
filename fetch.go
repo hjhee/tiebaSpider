@@ -44,32 +44,49 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 			if err != nil {
 				isEOF = true
 			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
 			u, err := url.Parse(strings.TrimSpace(line))
 			if err != nil {
 				log.Printf("[Fetch] Error parsing %s, skipping\n", line)
 				continue
 			}
 
-			if u.Host != "tieba.baidu.com" {
-				log.Printf("[Fetch] %s is not from Tieba, skipping\n", u)
-				continue
-			}
+			var pageType HTMLType
 
-			if match := validURL.Match([]byte(u.Path)); !match {
-				log.Printf("[Fetch] %s is not a valid Tieba post URL, skipping\n", u)
-				continue
-			}
+			if u.Scheme == "file" {
+				pageType = HTMLLocal
+				q := u.Query()
+				tid := q.Get("tid") // get file tid for TemplateMap key later
+				if tid == "" {
+					log.Printf("[Fetch] file path %s is missing tid field, skipping", u)
+					continue
+				}
+			} else {
+				pageType = HTMLWebHomepage
+				if u.Host != "tieba.baidu.com" {
+					log.Printf("[Fetch] URL host %s is not Tieba, skipping", u)
+					continue
+				}
 
-			// strip query from url
-			// URL Builder/Query builder in Go
-			// https://stackoverflow.com/a/26987017/6091246
-			u.RawQuery = ""
+				if match := validURL.Match([]byte(u.Path)); !match {
+					log.Printf("[Fetch] %s is not a valid Tieba post URL, skipping", u)
+					continue
+				}
+
+				// strip query from url
+				// URL Builder/Query builder in Go
+				// https://stackoverflow.com/a/26987017/6091246
+				u.RawQuery = ""
+			}
 
 			// log.Printf("[Fetch] Got new url from list: %v\n", u)
 
 			pc.Add(1)
 			select {
-			case pc.send <- &HTMLPage{URL: u, Type: HTMLWebHomepage}:
+			case pc.send <- &HTMLPage{URL: u, Type: pageType}:
 			case <-done:
 				return
 			}
@@ -120,8 +137,13 @@ func fetcher(done <-chan struct{}, wg *sync.WaitGroup, jobsLeft *int64, ret chan
 			if !ok {
 				return
 			}
-			err := fetchHTMLFromURL(page)
-			// err := fetchHTMLFromFile(page) // debug
+			var err error
+			switch page.Type {
+			case HTMLLocal:
+				err = fetchHTMLFromFile(page)
+			default:
+				err = fetchHTMLFromURL(page)
+			}
 			if err != nil {
 				go func(page *HTMLPage) {
 					select {
@@ -206,18 +228,9 @@ func fetchHTMLFromURL(page *HTMLPage) error {
 }
 
 func fetchHTMLFromFile(page *HTMLPage) error {
-	var filename string
-	switch page.Type {
-	case HTMLWebHomepage:
-		filename = "example/content.html"
-	case HTMLWebPage:
-		filename = "example/content1.html"
-	case HTMLJSON:
-		filename = "example/lzl1.json"
-	}
-	in, err := os.OpenFile(filename, os.O_RDONLY, 0644)
+	in, err := os.OpenFile(page.URL.Path, os.O_RDONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("Error reading url list: %v", err)
+		return fmt.Errorf("Error reading file path from %s: %v", page.URL.Path, err)
 	}
 	defer in.Close()
 	reader := bufio.NewReader(in)

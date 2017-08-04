@@ -108,8 +108,8 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 			pageNum = int64(n)
 		}
 
-		tf.PostsLeft = pageNum
-		tf.LzlsLeft = pageNum
+		tf.postsLeft = pageNum
+		tf.lzlsLeft = pageNum
 		pc.Add(pageNum - 2 + 1)
 		go func() {
 			for i := int64(2); i <= pageNum; i++ {
@@ -245,6 +245,34 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 	return nil
 }
 
+// parse templateField from local file, JSON formatted
+func templateParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+	defer pc.Del(1)
+	var threadID uint64
+
+	u := page.URL
+	q := u.Query()
+	tid := q.Get("tid")
+	if tid == "" {
+		return fmt.Errorf("Error parsing getting tid from %s", page.URL.String()) // skip illegal URL
+	}
+	ret, _ := strconv.Atoi(tid)
+	threadID = uint64(ret)
+
+	var tf *TemplateField
+	tf = tmMap.Get(threadID)
+
+	tf.mutex.Lock()
+	err := json.Unmarshal(page.Content, tf)
+	tf.mutex.Unlock()
+	if err != nil {
+		return fmt.Errorf("Error parsing template file %s: %v", page.URL.String(), err)
+	}
+	tf.Send(tmMap.Channel)
+
+	return nil
+}
+
 func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *PageChannel, tmMap *TemplateMap) {
 	defer wg.Done()
 	var err error
@@ -269,6 +297,11 @@ func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *Pag
 				}
 			case HTMLJSON:
 				err = commentParser(done, p, pc, tmMap)
+				if err != nil {
+					errc <- err
+				}
+			case HTMLLocal:
+				err = templateParser(done, p, pc, tmMap)
 				if err != nil {
 					errc <- err
 				}

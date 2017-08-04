@@ -1,1 +1,2 @@
 https://tieba.baidu.com/p/3922635509
+file:///example/test0.json?tid=3922635509
