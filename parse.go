@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/rand"
 	"net/url"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -32,19 +33,17 @@ func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback fun
 	if err != nil {
 		return fmt.Errorf("Error parsing %s: %v", page.URL, err)
 	}
-	posts := doc.Find("div.l_post.l_post_bright.j_l_post.clearfix")
-	s := posts.First()
-	dataField, ok := s.Attr("data-field")
-	if !ok {
-		return fmt.Errorf("first data-field not found")
-	}
-	var tiebaPost TiebaField
-	err = json.Unmarshal([]byte(dataField), &tiebaPost)
-	if err != nil {
-		return fmt.Errorf("first data-field unmarshal failed: %v", err)
-	}
-	threadID := tiebaPost.Content.ThreadID
-	forumID := tiebaPost.Content.ForumID
+
+	// get threadID and forumID using regex
+	posts := doc.Find("div.l_post.l_post_bright.j_l_post")
+	threadRegex := regexp.MustCompile(`\b"?thread_id"?:"?(\d+)"?\b`)
+	match := threadRegex.FindStringSubmatch(string(page.Content))
+	strInt, _ := strconv.ParseInt(match[1], 10, 64)
+	threadID := uint64(strInt)
+	forumRegex := regexp.MustCompile(`\b"?forum_id"?:"?(\d+)"?\b`)
+	match = forumRegex.FindStringSubmatch(string(page.Content))
+	strInt, _ = strconv.ParseInt(match[1], 10, 64)
+	forumID := uint64(strInt)
 	var pageNum int
 	q := page.URL.Query()
 	if pn := q.Get("pn"); pn == "" {
@@ -152,12 +151,13 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 		posts.Each(func(i int, s *goquery.Selection) {
 			dataField, ok := s.Attr("data-field")
 			if !ok {
-				log.Printf("#%d data-field not found: %s", i, page.URL.String()) // there's a error on the page, maybe Tieba updated the syntax
+				// maybe not an error, but an older version of data-field
+				// log.Printf("#%d data-field not found: %s", i, page.URL.String()) // there's a error on the page, maybe Tieba updated the syntax
 				return
 			}
 			var tiebaPost TiebaField
 			var res OutputField
-			err := json.Unmarshal([]byte(dataField), &tiebaPost)
+			err := json.Unmarshal([]byte(html.UnescapeString(dataField)), &tiebaPost)
 			if err != nil {
 				log.Printf("#%d data-field unmarshal failed: %v, url: %s", i, err, page.URL.String()) // there's a error on the page, maybe Tieba updated the syntax
 				return
@@ -166,6 +166,18 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 			res.Content = template.HTML(html.UnescapeString(tiebaPost.Content.Content))
 			res.PostNO = tiebaPost.Content.PostNO
 			res.PostID = tiebaPost.Content.PostID
+
+			if res.Content == "" {
+				// data-field does not contain content
+				// infer an old version of posts
+				postID := fmt.Sprintf("#post_content_%d", res.PostID)
+				content, err := posts.Find(postID).Html()
+				if err != nil {
+					log.Printf("#%d: post_content_%d parse failed, %s", i, res.PostID, err)
+				} else {
+					res.Content = template.HTML(html.UnescapeString(content))
+				}
+			}
 
 			// get post time
 			// Jquery过滤选择器，选择前几个元素，后几个元素，内容过滤选择器等
@@ -211,7 +223,7 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 	defer tf.AddLzls(-1)
 
 	var lzl LzlField
-	err := json.Unmarshal(page.Content, &lzl)
+	err := json.Unmarshal([]byte(html.UnescapeString(string(page.Content))), &lzl)
 	if err != nil {
 		return fmt.Errorf("Error parsing content file %s: %v", page.URL.String(), err)
 	}
@@ -226,7 +238,7 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 		return nil // comment list empty, stop
 	}
 	comments := make(map[uint64]*LzlComment)
-	err = json.Unmarshal(commentList, &comments)
+	err = json.Unmarshal([]byte(html.UnescapeString(string(commentList))), &comments)
 	if err != nil {
 		return fmt.Errorf("Error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
 	}
@@ -263,7 +275,7 @@ func templateParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 	tf = tmMap.Get(threadID)
 
 	tf.mutex.Lock()
-	err := json.Unmarshal(page.Content, tf)
+	err := json.Unmarshal([]byte(html.UnescapeString(string(page.Content))), tf)
 	tf.mutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("Error parsing template file %s: %v", page.URL.String(), err)
