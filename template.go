@@ -75,7 +75,6 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 
 					filename = fmt.Sprintf("output/file_%s.html", t.Title)
 					err = writeOutput(filename, func(w *bufio.Writer) error {
-
 						if err := tmpl.Execute(w, struct {
 							Title string
 							Posts []*OutputField

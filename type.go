@@ -249,7 +249,8 @@ func (t *TemplateField) Merge() {
 }
 
 // Unique removes any duplicate posts
-// naive
+// too naive
+// TODO: improve result with NLP technique
 func (t *TemplateField) Unique() {
 	// Idiomatic way to remove duplicates in a slice
 	// https://www.reddit.com/r/golang/comments/5ia523/idiomatic_way_to_remove_duplicates_in_a_slice/db6qa2e/

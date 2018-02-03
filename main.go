@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
 	"log"
 	"math/rand"
@@ -9,7 +10,7 @@ import (
 )
 
 const (
-	numFetcher  = 100
+	numFetcher  = 10
 	numParser   = 50
 	numRenderer = 5
 
@@ -18,7 +19,19 @@ const (
 
 var outputTemplate *template.Template
 
+type logWriter struct {
+}
+
+func (writer logWriter) Write(bytes []byte) (int, error) {
+	return fmt.Print(time.Now().UTC().Format("2006-01-02 15:04:05 ") + string(bytes))
+}
+
 func init() {
+	// setup log time format
+	// https://stackoverflow.com/a/36140590/6091246
+	log.SetFlags(0)
+	log.SetOutput(new(logWriter))
+
 	outputPath := "./output"
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		err = os.Mkdir(outputPath, 0644)
@@ -26,7 +39,9 @@ func init() {
 			log.Fatalf("Error creating output folder: %v", err)
 		}
 	}
+
 	rand.Seed(time.Now().UnixNano())
+
 	// outputTemplate is used to render output
 	outputTemplate = template.Must(template.New(templateName).Funcs(
 		template.FuncMap{"convertTime": func(ts int64) string {
