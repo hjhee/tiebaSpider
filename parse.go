@@ -67,15 +67,16 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 			pageNum = int64(n)
 		}
 
-		tf.postsLeft = pageNum
+		tf.pagesLeft = pageNum
 		tf.lzlsLeft = pageNum
-		pc.Add(pageNum - 2 + 1 + pageNum)
+		// fetch all comments and lzls, excluding comments in the first page
+		pc.Add(pageNum - 1 + pageNum)
 		go func() {
 			for i := int64(2); i <= pageNum; i++ {
 				u := &url.URL{}
 				*u = *page.URL
 				q := u.Query()
-				q.Set("pn", fmt.Sprint(i))
+				q.Set("pn", strconv.Itoa(int(i)))
 				u.RawQuery = q.Encode()
 				newPage := &HTMLPage{
 					URL:  u, // example: https://tieba.baidu.com/p/3922635509?pn=2
@@ -97,13 +98,13 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 			// http://tieba.baidu.com/p/totalComment?t=1501582373&tid=3922635509&fid=867983&pn=2&see_lz=0
 			// python爬取贴吧楼中楼
 			// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
-			u := &url.URL{
-				Scheme: "http",
-				Host:   "tieba.baidu.com",
-				Path:   "/p/totalComment",
-			}
-			q := u.Query()
 			for i := int64(0); i < pageNum; i++ {
+				u := &url.URL{
+					Scheme: "http",
+					Host:   "tieba.baidu.com",
+					Path:   "/p/totalComment",
+				}
+				q := u.Query()
 				// Go by Example: Epoch
 				// https://gobyexample.com/epoch
 				q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
@@ -111,7 +112,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 				q.Set("fid", strconv.Itoa(int(forumID)))
 				q.Set("pn", strconv.Itoa(int(i)))
 				u.RawQuery = q.Encode()
-				log.Printf("requesting totalComment: %s", u)
+				// log.Printf("requesting totalComment: %s", u)
 				select {
 				case <-done:
 					return
@@ -141,7 +142,7 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 				// tmMap.Channel <- tf
 			}
 		}()
-		defer tf.AddPosts(-1)
+		defer tf.AddPage(-1)
 		posts.Each(func(i int, s *goquery.Selection) {
 			// filter elements that has more than 4 class (maybe an advertisement)
 			classStr, _ := s.Attr("class") // get class string
@@ -227,9 +228,36 @@ func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 	return callback(done, page, pc, tmMap, tf)
 }
 
+func requestLzlComment(tid string, pid string, pn string, tp HTMLType, pc *PageChannel) {
+	// there are more lzls to fetch
+	// url syntax:
+	// url example: https://tieba.baidu.com/p/comment?tid=5381698176&pid=114248941589&pn=4&t=1517692202100
+	u := &url.URL{
+		Scheme: "http",
+		Host:   "tieba.baidu.com",
+		Path:   "/p/comment",
+	}
+	q := u.Query()
+	q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
+	q.Set("tid", tid)
+	q.Set("pid", pid)
+	q.Set("pn", pn) // start fetching additional comment from page 2
+	u.RawQuery = q.Encode()
+
+	// log.Printf("requesting %s", u)
+
+	pc.Add(1)
+	go func() {
+		pc.send <- &HTMLPage{
+			URL:  u,
+			Type: tp,
+		}
+	}()
+}
+
 func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
-		defer tf.AddLzls(-1)
+		defer tf.AddLzl(-1)
 		var lzl LzlField
 		err := json.Unmarshal([]byte(string(page.Content)), &lzl)
 		if err != nil {
@@ -256,37 +284,29 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 		}
 
 		for pid, v := range comments {
+			if tf.Lzls.IsExist(pid) {
+				// totalComment contains lzls in different pages, which are duplicate
+				continue
+			}
+			// normalize
+			for i, comment := range v.Info {
+				comment.Index = int64(i)
+				comment.Time = time.Unix(comment.Timestamp, 0).In(time.Local).Format("2006-01-02 15:04")
+			}
 			// merge maps
 			// Getting the union of two maps in go
 			// https://stackoverflow.com/a/22621838/6091246
 			numLeft := int64(v.Num) - int64(v.ListNum)
-
-			log.Printf("merge pid=%d, Num=%d, ListNum=%d", pid, v.Num, v.ListNum)
-
 			if numLeft > 0 {
-				// there are more lzls to fetch
-				// url syntax:
-				// url example: https://tieba.baidu.com/p/comment?tid=5381698176&pid=114248941589&pn=4&t=1517692202100
-				uComment := &url.URL{
-					Scheme: "http",
-					Host:   "tieba.baidu.com",
-					Path:   "/p/comment",
+				// extend Lzl slice if needed
+				if n := len(v.Info); uint64(n) < v.Num {
+					// extend slice
+					newSlice := make([]*LzlContent, n, v.Num+1)
+					copy(newSlice, v.Info)
+					v.Info = newSlice
 				}
-				qComment := uComment.Query()
-				qComment.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
-				qComment.Set("tid", strconv.Itoa(int(tf.ThreadID)))
-				qComment.Set("pid", strconv.Itoa(int(pid)))
-				qComment.Set("pn", "2") // start fetching additional comment from page 2
-				uComment.RawQuery = qComment.Encode()
-
-				tf.AddLzls(1)
-				pc.Add(1)
-				go func() {
-					pc.send <- &HTMLPage{
-						URL:  uComment,
-						Type: HTMLLzlHome,
-					}
-				}()
+				tf.AddLzl(1)
+				requestLzlComment(strconv.Itoa(int(tf.ThreadID)), strconv.Itoa(int(pid)), "2", HTMLLzlHome, pc)
 			}
 			tf.Lzls.Insert(pid, v) // merge maps
 		}
@@ -297,12 +317,16 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 
 func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
+		defer tf.AddLzl(-1)
 		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
 		if err != nil {
 			return fmt.Errorf("Error parsing %s: %v", page.URL, err)
 		}
+		q := page.URL.Query()
+		tid := q.Get("tid")
+		pid := q.Get("pid")
+		pn := q.Get("pn")
 		if page.Type == HTMLLzlHome {
-			defer tf.AddLzls(-1)
 			s := doc.Find("li.lzl_li_pager_s")
 			dataField, ok := s.Attr("data-field")
 			if !ok {
@@ -313,8 +337,34 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 			if err != nil {
 				return fmt.Errorf("LzlPageComment data-field unmarshal failed: %v, url: %s", err, page.URL)
 			}
-			log.Printf("got %s, totalPage=%d, totalNum=%d", page.URL, lzlPage.TotalPage, lzlPage.TotalNum)
+			tf.AddLzl(int64(lzlPage.TotalPage - 2))
+			for i := uint64(3); i <= lzlPage.TotalPage; i++ {
+				requestLzlComment(tid, pid, strconv.Itoa(int(i)), HTMLLzl, pc)
+			}
 		}
+		exLzls := doc.Find(".lzl_single_post.j_lzl_s_p")
+		exLzls.Each(func(i int, s *goquery.Selection) {
+			pageNum, _ := strconv.Atoi(pn)
+			key, _ := strconv.Atoi(pid)
+			content, err := s.Find(".lzl_content_main").Html()
+			if err != nil {
+				return
+			}
+			user := s.Find(".j_user_card.lzl_p_p")
+			userName, ok := user.Attr("username")
+			if !ok {
+				// userName not found
+				log.Printf("ExLzl: cannot find username for pid=%s, index=%d", pid, i+pageNum*10)
+				return
+			}
+			c := &LzlContent{
+				Index:    int64(i + pageNum*10),
+				UserName: userName,
+				Content:  template.HTML(content),
+				Time:     s.Find(".lzl_time").Text(),
+			}
+			tf.Lzls.Append(uint64(key), c)
+		})
 		return nil
 	})
 	return err

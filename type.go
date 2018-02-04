@@ -121,21 +121,23 @@ type LzlField struct {
 	Data   map[string]json.RawMessage `json:"data"`
 }
 
-// LzlContent is a thread of Lzl
+// LzlContent is a comment of Lzl from totalComment
 type LzlContent struct {
-	ThreadID  uint64        `json:"thread_id,string"`
-	PostID    uint64        `json:"post_id,string"`
-	CommentID uint64        `json:"comment_id,string"`
+	// 	ThreadID  uint64        `json:"thread_id,string"`
+	// 	PostID    uint64        `json:"post_id,string"`
+	// CommentID uint64        `json:"comment_id,string"`
+	Index     int64
 	UserName  string        `json:"username"`
 	Content   template.HTML `json:"content"`
 	Timestamp int64         `json:"now_time"`
+	Time      string
 }
 
 // LzlComment indicates the relationship between a Tieba posts and the attached Lzl comment
 type LzlComment struct {
-	Num     uint64       `json:"comment_num"`
-	ListNum uint64       `json:"comment_list_num"`
-	Info    []LzlContent `json:"comment_info"`
+	Num     uint64        `json:"comment_num"`
+	ListNum uint64        `json:"comment_list_num"`
+	Info    []*LzlContent `json:"comment_info"`
 	// Info []json.RawMessage `json:"comment_info"`
 }
 
@@ -160,6 +162,13 @@ type LzlMap struct {
 	lock *sync.Mutex
 }
 
+// Append LzlComment to Map with synchronization
+func (lzl *LzlMap) Append(k uint64, c *LzlContent) {
+	lzl.lock.Lock()
+	lzl.Map[k].Info = append(lzl.Map[k].Info, c)
+	lzl.lock.Unlock()
+}
+
 // Insert LzlComment to Map with synchronization
 func (lzl *LzlMap) Insert(k uint64, v *LzlComment) {
 	lzl.lock.Lock()
@@ -167,12 +176,20 @@ func (lzl *LzlMap) Insert(k uint64, v *LzlComment) {
 	lzl.lock.Unlock()
 }
 
+// IsExist returns true if key is already in Map
+func (lzl *LzlMap) IsExist(k uint64) bool {
+	lzl.lock.Lock()
+	_, ok := lzl.Map[k]
+	lzl.lock.Unlock()
+	return ok
+}
+
 // TemplateField stores all necessary information to render a HTML page
 type TemplateField struct {
 	Title     string
 	ThreadID  uint64
-	Posts     []*OutputField
-	postsLeft int64
+	Comments  []*OutputField
+	pagesLeft int64
 	Lzls      *LzlMap // Key is PostID
 	lzlsLeft  int64
 	mutex     *sync.RWMutex
@@ -196,65 +213,67 @@ func (t *TemplateField) Send(c chan *TemplateField) {
 	}
 }
 
-// AddPosts adds the number of Posts to be parsed
-func (t *TemplateField) AddPosts(n int64) {
-	atomic.AddInt64(&t.postsLeft, n)
+// AddPage adds the number of Page to be parsed
+func (t *TemplateField) AddPage(n int64) {
+	atomic.AddInt64(&t.pagesLeft, n)
 }
 
-// AddLzls adds the number of Lzls to be parsed
-func (t *TemplateField) AddLzls(n int64) {
+// AddLzl adds the number of Lzls to be parsed
+func (t *TemplateField) AddLzl(n int64) {
 	atomic.AddInt64(&t.lzlsLeft, n)
 }
 
 // Append a new post to TemplateField
 func (t *TemplateField) Append(post *OutputField) {
 	t.mutex.Lock()
-	// l := len(t.Posts)
+	// l := len(t.Comments)
 	// n := l + 1
-	// if n > cap(t.Posts) {
+	// if n > cap(t.Comments) {
 	// 	newSlice := make([]*OutputField, 30*10+n+1)
-	// 	copy(newSlice, t.Posts)
-	// 	t.Posts = newSlice
+	// 	copy(newSlice, t.Comments)
+	// 	t.Comments = newSlice
 	// }
-	// t.Posts = t.Posts[0:n]
-	// copy(t.Posts[n:n+1], post)
-	t.Posts = append(t.Posts, post)
+	// t.Comments = t.Comments[0:n]
+	// copy(t.Comments[n:n+1], post)
+	t.Comments = append(t.Comments, post)
 	t.mutex.Unlock()
 }
 
 // IsDone returns whether TemplateField is ready to be rendered
 func (t *TemplateField) IsDone() bool {
-	return atomic.LoadInt64(&t.postsLeft) <= 0 && atomic.LoadInt64(&t.lzlsLeft) <= 0
+	pagesLeft := atomic.LoadInt64(&t.pagesLeft)
+	lzlsLeft := atomic.LoadInt64(&t.lzlsLeft)
+	return pagesLeft <= 0 && lzlsLeft <= 0
 }
 
 // Merge consecutive posts whose Useaname is the same
 func (t *TemplateField) Merge() {
-	l := len(t.Posts)
+	l := len(t.Comments)
 	for i := 0; i+1 < l; i++ {
-		if t.Posts[i+1].UserName != t.Posts[i].UserName {
+		if t.Comments[i+1].UserName != t.Comments[i].UserName {
 			continue
 		}
-		v, ok := t.Lzls.Map[t.Posts[i+1].PostID]
+		v, ok := t.Lzls.Map[t.Comments[i+1].PostID]
 		if ok && v.ListNum != 0 && v.Num != 0 {
 			continue
 		}
-		v, ok = t.Lzls.Map[t.Posts[i].PostID]
+		v, ok = t.Lzls.Map[t.Comments[i].PostID]
 		if ok && v.ListNum != 0 && v.Num != 0 {
 			continue
 		}
 		// How to efficiently concatenate strings in Go?
 		// https://stackoverflow.com/a/43675122/6091246
-		bs := make([]byte, len(t.Posts[i].Content)+len(t.Posts[i+1].Content)+1)
+		bs := make([]byte, len(t.Comments[i].Content)+len(t.Comments[i+1].Content)+1)
 		bl := 0
-		bl += copy(bs[bl:], t.Posts[i].Content)
+		bl += copy(bs[bl:], t.Comments[i].Content)
 		bs[bl] = '\n'
 		bl++
-		bl += copy(bs[bl:], t.Posts[i+1].Content)
-		t.Posts[i].Content = template.HTML(bs)
-		// t.Posts[i].Content = t.Posts[i].Content + "\n" + t.Posts[i+1].Content
+		bl += copy(bs[bl:], t.Comments[i+1].Content)
+		t.Comments[i].Content = template.HTML(bs)
+		// t.Comments[i].Content = t.Comments[i].Content + "\n" + t.Comments[i+1].Content
 		// removes duplicate values in given slice
 		// https://gist.github.com/alioygur/16c66b4249cb42715091fe010eec7e33#file-unique_slice-go-L13
-		t.Posts = append(t.Posts[:i+1], t.Posts[i+2:]...)
+		t.Comments = append(t.Comments[:i+1], t.Comments[i+2:]...)
 		i--
 		l--
 	}
@@ -266,17 +285,17 @@ func (t *TemplateField) Merge() {
 func (t *TemplateField) Unique() {
 	// Idiomatic way to remove duplicates in a slice
 	// https://www.reddit.com/r/golang/comments/5ia523/idiomatic_way_to_remove_duplicates_in_a_slice/db6qa2e/
-	seen := make(map[template.HTML]struct{}, len(t.Posts))
+	seen := make(map[template.HTML]struct{}, len(t.Comments))
 	j := 0
-	for _, v := range t.Posts {
+	for _, v := range t.Comments {
 		if _, ok := seen[v.Content]; ok {
 			continue
 		}
 		seen[v.Content] = struct{}{}
-		t.Posts[j] = v
+		t.Comments[j] = v
 		j++
 	}
-	t.Posts = t.Posts[:j]
+	t.Comments = t.Comments[:j]
 }
 
 // TemplateMap manipulate a Tieba thread in parser
@@ -298,7 +317,7 @@ func (tm *TemplateMap) Get(k uint64) *TemplateField {
 		if val, ok = tm.Map[k]; !ok {
 			val = &TemplateField{
 				ThreadID: k,
-				Posts:    make([]*OutputField, 0, 30),
+				Comments: make([]*OutputField, 0, 30),
 				Lzls: &LzlMap{
 					Map:  make(map[uint64]*LzlComment),
 					lock: &sync.Mutex{},

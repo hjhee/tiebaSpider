@@ -48,9 +48,15 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 						return // no new task from parser, exit
 					}
 
-					sort.Slice(t.Posts, func(a, b int) bool {
-						return t.Posts[a].PostNO < t.Posts[b].PostNO
+					sort.Slice(t.Comments, func(a, b int) bool {
+						return t.Comments[a].PostNO < t.Comments[b].PostNO
 					})
+
+					for _, v := range t.Lzls.Map {
+						sort.Slice(v.Info, func(a, b int) bool {
+							return v.Info[a].Index < v.Info[b].Index
+						})
+					}
 
 					t.Merge()
 					// t.Unique()
@@ -76,10 +82,10 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 					filename = fmt.Sprintf("output/file_%s.html", t.Title)
 					err = writeOutput(filename, func(w *bufio.Writer) error {
 						if err := tmpl.Execute(w, struct {
-							Title string
-							Posts []*OutputField
-							Lzls  map[uint64]*LzlComment
-						}{Title: t.Title, Posts: t.Posts, Lzls: t.Lzls.Map}); err != nil {
+							Title    string
+							Comments []*OutputField
+							Lzls     map[uint64]*LzlComment
+						}{Title: t.Title, Comments: t.Comments, Lzls: t.Lzls.Map}); err != nil {
 							return fmt.Errorf("error executing template %s: %v", filename, err)
 						}
 						return nil

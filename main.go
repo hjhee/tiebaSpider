@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	version     = "v0.1.3"
 	numFetcher  = 10
 	numParser   = 50
 	numRenderer = 5
@@ -60,6 +61,8 @@ func init() {
 }
 
 func main() {
+	println("tiebaSpider", version)
+
 	// closing done to force all goroutines to quit
 	// Go Concurrency Patterns: Pipelines and cancellation
 	// https://blog.golang.org/pipelines
@@ -102,8 +105,10 @@ func main() {
 				continue
 			}
 			log.Printf("[Template] error: %v\n", err)
-		case file := <-outputc:
-			log.Printf("[Template] %s done\n", file)
+		case file, ok := <-outputc:
+			if ok {
+				log.Printf("[Template] %s done\n", file)
+			}
 		}
 	}
 }

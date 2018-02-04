@@ -21,18 +21,18 @@ function toggleLzl(thread_id) {
 </style>
 </head>
 <body>
-{{range .Posts}}
+{{range .Comments}}
 <div>
     <div>
         <div>{{.Time}} #{{.PostNO}}: <b>{{.UserName}}</b></div>
         <div>{{.Content}}</div>
     </div>
     {{if index $.Lzls .PostID}}
-    {{$lzl := index $.Lzls .PostID }}
-    <button onclick="toggleLzl({{ .PostID }})">Click Me</button>
+    <button onclick="toggleLzl({{ .PostID }})">收起回复</button>
     <div id="lzl{{.PostID}}" class="lzl">
+        {{$lzl := index $.Lzls .PostID }}
         {{range $lzl.Info}}
-        <div>{{convertTime .Timestamp}} <b>{{.UserName}}</b>: {{.Content}}</div>
+        <div>{{.Time}} <b>{{.UserName}}</b>: {{.Content}}</div>
         {{end}}
     </div>
     {{end}}
