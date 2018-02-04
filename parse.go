@@ -34,51 +34,11 @@ func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback fun
 		return fmt.Errorf("Error parsing %s: %v", page.URL, err)
 	}
 
-	// get threadID and forumID using regex
 	posts := doc.Find("div.l_post.l_post_bright.j_l_post.clearfix")
 	threadRegex := regexp.MustCompile(`\b"?thread_id"?:"?(\d+)"?\b`)
 	match := threadRegex.FindStringSubmatch(string(page.Content))
 	strInt, _ := strconv.ParseInt(match[1], 10, 64)
 	threadID := uint64(strInt)
-	forumRegex := regexp.MustCompile(`\b"?forum_id"?:"?(\d+)"?\b`)
-	match = forumRegex.FindStringSubmatch(string(page.Content))
-	strInt, _ = strconv.ParseInt(match[1], 10, 64)
-	forumID := uint64(strInt)
-	var pageNum int
-	q := page.URL.Query()
-	if pn := q.Get("pn"); pn == "" {
-		pageNum = 1
-	} else {
-		pageNum, err = strconv.Atoi(pn)
-		if err != nil {
-			pageNum = 1
-		}
-	}
-	// fetch lzl comments
-	// syntax:
-	// http://tieba.baidu.com/p/totalComment?t=1501582373&tid=3922635509&fid=867983&pn=2&see_lz=0
-	// python爬取贴吧楼中楼
-	// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
-	u := &url.URL{
-		Scheme: "http",
-		Host:   "tieba.baidu.com",
-		Path:   "/p/totalComment",
-	}
-	q = u.Query()
-	q.Set("t", strconv.Itoa(time.Now().Second()))
-	q.Set("tid", strconv.Itoa(int(threadID)))
-	q.Set("fid", strconv.Itoa(int(forumID)))
-	q.Set("pn", strconv.Itoa(pageNum))
-	u.RawQuery = q.Encode()
-
-	pc.Add(1)
-	go func() {
-		pc.send <- &HTMLPage{
-			URL:  u,
-			Type: HTMLJSON,
-		}
-	}()
-
 	tf := tmMap.Get(threadID)
 	err = callback(tf, doc, posts)
 	// page.Response.Body.Close()
@@ -109,7 +69,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 
 		tf.postsLeft = pageNum
 		tf.lzlsLeft = pageNum
-		pc.Add(pageNum - 2 + 1)
+		pc.Add(pageNum - 2 + 1 + pageNum)
 		go func() {
 			for i := int64(2); i <= pageNum; i++ {
 				u := &url.URL{}
@@ -125,6 +85,40 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 				case <-done:
 					return
 				case pc.send <- newPage: // add all other pages to fetcher
+				}
+			}
+
+			forumRegex := regexp.MustCompile(`\b"?forum_id"?:"?(\d+)"?\b`)
+			match := forumRegex.FindStringSubmatch(string(page.Content))
+			strInt, _ := strconv.ParseInt(match[1], 10, 64)
+			forumID := uint64(strInt)
+			// fetch lzl comments
+			// syntax:
+			// http://tieba.baidu.com/p/totalComment?t=1501582373&tid=3922635509&fid=867983&pn=2&see_lz=0
+			// python爬取贴吧楼中楼
+			// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
+			u := &url.URL{
+				Scheme: "http",
+				Host:   "tieba.baidu.com",
+				Path:   "/p/totalComment",
+			}
+			q := u.Query()
+			for i := int64(0); i < pageNum; i++ {
+				// Go by Example: Epoch
+				// https://gobyexample.com/epoch
+				q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
+				q.Set("tid", strconv.Itoa(int(tf.ThreadID)))
+				q.Set("fid", strconv.Itoa(int(forumID)))
+				q.Set("pn", strconv.Itoa(int(i)))
+				u.RawQuery = q.Encode()
+				log.Printf("requesting totalComment: %s", u)
+				select {
+				case <-done:
+					return
+				case pc.send <- &HTMLPage{
+					URL:  u,
+					Type: HTMLJSON,
+				}:
 				}
 			}
 		}()
@@ -166,7 +160,7 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 			var res OutputField
 			err := json.Unmarshal([]byte(dataField), &tiebaPost)
 			if err != nil {
-				log.Printf("#%d data-field unmarshal failed: %v, url: %s", i, err, page.URL.String()) // there's a error on the page, maybe Tieba updated the syntax
+				log.Printf("#%d data-field unmarshal failed: %v, url: %s", i, err, page.URL) // there's a error on the page, maybe Tieba updated the syntax
 				return
 			}
 			res.UserName = tiebaPost.Author.UserName
@@ -209,7 +203,7 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 }
 
 // parse lzl comment, JSON formatted
-func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, callback func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error) error {
 	defer pc.Del(1)
 	var threadID uint64
 
@@ -230,41 +224,100 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 			// tmMap.Channel <- tf
 		}
 	}()
-	defer tf.AddLzls(-1)
+	return callback(done, page, pc, tmMap, tf)
+}
 
-	var lzl LzlField
-	err := json.Unmarshal([]byte(string(page.Content)), &lzl)
-	if err != nil {
-		return fmt.Errorf("Error parsing content file %s: %v", page.URL.String(), err)
-	}
-	if lzl.ErrNO != 0 {
-		return fmt.Errorf("Error getting data: %s, %s", page.URL.String(), lzl.ErrMsg)
-	}
-	commentList, ok := lzl.Data["comment_list"]
-	if !ok {
-		return fmt.Errorf("Error getting comment_list: %s", page.URL.String())
-	}
-	if string(commentList) == "" || string(commentList) == "[]" {
-		return nil // comment list empty, stop
-	}
-	comments := make(map[uint64]*LzlComment)
-	err = json.Unmarshal([]byte(string(commentList)), &comments)
-	if err != nil {
-		return fmt.Errorf("Error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
-	}
+func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
+		defer tf.AddLzls(-1)
+		var lzl LzlField
+		err := json.Unmarshal([]byte(string(page.Content)), &lzl)
+		if err != nil {
+			return fmt.Errorf("Error parsing content file %s: %v", page.URL.String(), err)
+		}
+		if lzl.ErrNO != 0 {
+			return fmt.Errorf("Error getting data: %s, %s", page.URL.String(), lzl.ErrMsg)
+		}
+		commentList, ok := lzl.Data["comment_list"]
+		if !ok {
+			return fmt.Errorf("Error getting comment_list: %s", page.URL.String())
+		}
+		if string(commentList) == "" || string(commentList) == "[]" {
+			return nil // comment list empty, stop
+		}
+		comments := make(map[uint64]*LzlComment)
+		err = json.Unmarshal([]byte(string(commentList)), &comments)
+		if err != nil {
+			return fmt.Errorf("Error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
+		}
 
-	if len(comments) == 0 {
-		return nil // does not have any comments, stop
-	}
+		if len(comments) == 0 {
+			return nil // does not have any comments, stop
+		}
 
-	for k, v := range comments {
-		// merge maps
-		// Getting the union of two maps in go
-		// https://stackoverflow.com/a/22621838/6091246
-		tf.Lzls.Insert(k, v) // merge maps
-	}
+		for pid, v := range comments {
+			// merge maps
+			// Getting the union of two maps in go
+			// https://stackoverflow.com/a/22621838/6091246
+			numLeft := int64(v.Num) - int64(v.ListNum)
 
-	return nil
+			log.Printf("merge pid=%d, Num=%d, ListNum=%d", pid, v.Num, v.ListNum)
+
+			if numLeft > 0 {
+				// there are more lzls to fetch
+				// url syntax:
+				// url example: https://tieba.baidu.com/p/comment?tid=5381698176&pid=114248941589&pn=4&t=1517692202100
+				uComment := &url.URL{
+					Scheme: "http",
+					Host:   "tieba.baidu.com",
+					Path:   "/p/comment",
+				}
+				qComment := uComment.Query()
+				qComment.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
+				qComment.Set("tid", strconv.Itoa(int(tf.ThreadID)))
+				qComment.Set("pid", strconv.Itoa(int(pid)))
+				qComment.Set("pn", "2") // start fetching additional comment from page 2
+				uComment.RawQuery = qComment.Encode()
+
+				tf.AddLzls(1)
+				pc.Add(1)
+				go func() {
+					pc.send <- &HTMLPage{
+						URL:  uComment,
+						Type: HTMLLzlHome,
+					}
+				}()
+			}
+			tf.Lzls.Insert(pid, v) // merge maps
+		}
+		return nil
+	})
+	return err
+}
+
+func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
+		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
+		if err != nil {
+			return fmt.Errorf("Error parsing %s: %v", page.URL, err)
+		}
+		if page.Type == HTMLLzlHome {
+			defer tf.AddLzls(-1)
+			s := doc.Find("li.lzl_li_pager_s")
+			dataField, ok := s.Attr("data-field")
+			if !ok {
+				return fmt.Errorf("Error parsing %s: total number of pages is not determinable", page.URL)
+			}
+			var lzlPage LzlPageComment
+			err := json.Unmarshal([]byte(dataField), &lzlPage)
+			if err != nil {
+				return fmt.Errorf("LzlPageComment data-field unmarshal failed: %v, url: %s", err, page.URL)
+			}
+			log.Printf("got %s, totalPage=%d, totalNum=%d", page.URL, lzlPage.TotalPage, lzlPage.TotalNum)
+		}
+		return nil
+	})
+	return err
 }
 
 // parse templateField from local file, JSON formatted
@@ -318,6 +371,11 @@ func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *Pag
 					errc <- err
 				}
 			case HTMLJSON:
+				err = totalCommentParser(done, p, pc, tmMap)
+				if err != nil {
+					errc <- err
+				}
+			case HTMLLzlHome, HTMLLzl:
 				err = commentParser(done, p, pc, tmMap)
 				if err != nil {
 					errc <- err

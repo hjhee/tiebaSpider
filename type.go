@@ -64,8 +64,14 @@ const (
 	// HTMLWebPage is a page of a Tieba post
 	HTMLWebPage
 
-	// HTMLJSON is the Lzl Comment in JSON format
+	// HTMLJSON is the Lzl totalComment in JSON format
 	HTMLJSON
+
+	// HTMLLzlHome is the Lzl Comment of a comment in page 2 in JSON format
+	HTMLLzlHome
+
+	// HTMLLzl is the Lzl Comment of a comment in JSON format
+	HTMLLzl
 
 	// HTMLLocal is a local HTML or JSON file
 	HTMLLocal
@@ -131,6 +137,12 @@ type LzlComment struct {
 	ListNum uint64       `json:"comment_list_num"`
 	Info    []LzlContent `json:"comment_info"`
 	// Info []json.RawMessage `json:"comment_info"`
+}
+
+// LzlPageComment indicates the total number of LzlComments in a single comment
+type LzlPageComment struct {
+	TotalNum  uint64 `json:"total_num"`
+	TotalPage uint64 `json:"total_page"`
 }
 
 // OutputField render Tieba post in template
