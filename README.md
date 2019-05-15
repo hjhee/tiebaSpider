@@ -2,9 +2,7 @@
 
 程序获取百度贴吧帖子的所有评论，包括所有楼中楼，以HTML和JSON为格式保存到本地，同时合并所有楼层连续、发帖人相同帖子方便阅读。
 
-需要获取的帖子在`url.txt`中逐行指定。程序读取程序所在目录下的文件`url.txt`获取贴吧URL，逐行爬取URL指向的帖子。除了http协议的URL之外还支持file协议。此功能主要用于程序。验证程序功能或者调整HTML模板样式。程序将从本地已保存的JSON文件生成HTML，file协议格式参考`url.txt`已有的URL。
-
-HTML格式的文件样式由`template/template1.html`的HTML模板指定。所有已提取的帖子将命名为`file_{帖子主题}.{json,html}`保存至程序所在目录下的`output`文件夹。
+需要获取的帖子在`url.txt`中逐行指定。程序读取程序所在目录下的文件`url.txt`获取贴吧URL，逐行爬取URL指向的帖子。除了http协议的URL之外还支持file协议，file协议格式参考`url.txt`已有的URL。此功能主要用于验证程序功能或者调整HTML模板样式。所有已提取的帖子将命名为`file_{帖子主题}.{json,html}`保存至程序所在目录下的`output`文件夹。
 
 ## 特点
 
@@ -12,7 +10,7 @@ HTML格式的文件样式由`template/template1.html`的HTML模板指定。所�
 
 ## 模板
 
-可以参考已有的`template/template1.html`编写自己的HTML模板以调整生成的HTML文件。模板的所有可指定的数据参考`type.go`的`TemplateField`定义。
+保存的HTML格式文件由`template/template1.html`的HTML模板定义。可以改写该文件以调整生成的HTML文件，从而美化界面或者嵌入Javascript脚本实现根据发帖人筛选帖子，比如只看楼主等自定义功能。模板的所有可指定的数据参考`type.go`的`TemplateField`定义，模板语法参考go官方文档。
 
 ## 后续工作
 
