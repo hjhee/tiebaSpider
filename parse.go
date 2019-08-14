@@ -98,7 +98,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 			// http://tieba.baidu.com/p/totalComment?t=1501582373&tid=3922635509&fid=867983&pn=2&see_lz=0
 			// python爬取贴吧楼中楼
 			// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
-			for i := int64(0); i < pageNum; i++ {
+			for i := int64(0); i <= pageNum; i++ {
 				u := &url.URL{
 					Scheme: "http",
 					Host:   "tieba.baidu.com",
@@ -112,7 +112,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 				q.Set("fid", strconv.Itoa(int(forumID)))
 				q.Set("pn", strconv.Itoa(int(i)))
 				u.RawQuery = q.Encode()
-				// log.Printf("requesting totalComment: %s", u)
+				log.Printf("requesting totalComment: %s", u)
 				select {
 				case <-done:
 					return
