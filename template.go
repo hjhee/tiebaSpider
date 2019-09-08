@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"regexp"
 	"sort"
 	"sync"
 )
@@ -61,7 +62,12 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 					t.Merge()
 					// t.Unique()
 
-					filename := fmt.Sprintf("output/file_%s.json", t.Title)
+					// #6: remove illegal character in title
+					// ref: https://www.codeproject.com/tips/758861/removing-characters-which-are-not-allowed-in-windo
+					filenameRegex := regexp.MustCompile(`[\\/:*?""<>|]`)
+					validFilename := filenameRegex.ReplaceAllLiteralString(t.Title, "")
+
+					filename := fmt.Sprintf("output/file_%s.json", validFilename)
 
 					b, err := json.Marshal(t)
 					if err != nil {
@@ -79,7 +85,7 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 						continue
 					}
 
-					filename = fmt.Sprintf("output/file_%s.html", t.Title)
+					filename = fmt.Sprintf("output/file_%s.html", validFilename)
 					err = writeOutput(filename, func(w *bufio.Writer) error {
 						if err := tmpl.Execute(w, struct {
 							Title    string
