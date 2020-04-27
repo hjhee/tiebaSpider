@@ -90,7 +90,7 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 					err = writeOutput(filename, func(w *bufio.Writer) error {
 						if err := tmpl.Execute(w, struct {
 							Title    string
-							Url string
+							Url      string
 							Comments []*OutputField
 							Lzls     map[uint64]*LzlComment
 						}{Title: t.Title, Url: t.Url, Comments: t.Comments, Lzls: t.Lzls.Map}); err != nil {

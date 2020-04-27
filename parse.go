@@ -9,9 +9,9 @@ import (
 	"log"
 	"math/rand"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -34,7 +34,7 @@ func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback fun
 		return fmt.Errorf("Error parsing %s: %v", page.URL, err)
 	}
 
-	posts := doc.Find("div.l_post.l_post_bright.j_l_post.clearfix")
+	posts := doc.Find("div.l_post.j_l_post.l_post_bright")
 	threadRegex := regexp.MustCompile(`\b"?thread_id"?:"?(\d+)"?\b`)
 	match := threadRegex.FindStringSubmatch(string(page.Content))
 	strInt, _ := strconv.ParseInt(match[1], 10, 64)
@@ -114,7 +114,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 				q.Set("fid", strconv.Itoa(int(forumID)))
 				q.Set("pn", strconv.Itoa(int(i)))
 				u.RawQuery = q.Encode()
-				log.Printf("requesting totalComment: %s", u)
+				// log.Printf("requesting totalComment: %s", u)
 				select {
 				case <-done:
 					return
@@ -146,16 +146,10 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 		}()
 		defer tf.AddPage(-1)
 		posts.Each(func(i int, s *goquery.Selection) {
-			// filter elements that has more than 4 class (maybe an advertisement)
-			classStr, _ := s.Attr("class") // get class string
-			if len(strings.Fields(classStr)) > 4 {
-				return
-			}
-
 			dataField, ok := s.Attr("data-field")
 			if !ok {
 				// maybe not an error, but an older version of data-field
-				// log.Printf("#%d data-field not found: %s", i, page.URL.String()) // there's a error on the page, maybe Tieba updated the syntax
+				fmt.Fprintf(os.Stderr, "#%d data-field not found: %s\n", i, page.URL) // there's a error on the page, maybe Tieba updated the syntax
 				return
 			}
 
@@ -163,10 +157,16 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 			var res OutputField
 			err := json.Unmarshal([]byte(dataField), &tiebaPost)
 			if err != nil {
-				log.Printf("#%d data-field unmarshal failed: %v, url: %s", i, err, page.URL) // there's a error on the page, maybe Tieba updated the syntax
+				fmt.Fprintf(os.Stderr, "#%d data-field unmarshal failed: %v, url: %s\n", i, err, page.URL) // there's a error on the page, maybe Tieba updated the syntax
 				return
 			}
-			res.UserName = tiebaPost.Author.UserName
+			if content, err := s.Find("div.d_author ul.p_author li.d_name a.p_author_name.j_user_card").Html(); err != nil {
+				fmt.Fprintf(os.Stderr, "#%d Error parsing username from %s\n", i, page.URL)
+				return
+			} else {
+				res.UserName = template.HTML(content)
+			}
+
 			res.Content = template.HTML(tiebaPost.Content.Content)
 			res.PostNO = tiebaPost.Content.PostNO
 			res.PostID = tiebaPost.Content.PostID
@@ -352,11 +352,17 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 			if err != nil {
 				return
 			}
-			user := s.Find(".j_user_card.lzl_p_p")
-			userName, ok := user.Attr("username")
-			if !ok {
-				// userName not found
-				log.Printf("ExLzl: cannot find username for pid=%s, index=%d", pid, i+pageNum*10)
+			user := s.Find("div.lzl_cnt a.at.j_user_card")
+			userName := user.Text()
+			// userName, ok := user.Attr("username")
+			// if !ok {
+			// 	// userName not found
+			// 	log.Printf("ExLzl: cannot find username for pid=%s, index=%d", pid, i+pageNum*10)
+			// 	return
+			// } else
+			if userName == "" {
+				// user name is empty, try another method
+				log.Printf("ExLzl: please check url: %s", page.URL)
 				return
 			}
 			c := &LzlContent{

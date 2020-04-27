@@ -149,7 +149,7 @@ type LzlPageComment struct {
 
 // OutputField render Tieba post in template
 type OutputField struct {
-	UserName string
+	UserName template.HTML
 	Content  template.HTML
 	PostNO   uint64
 	PostID   uint64
@@ -187,7 +187,7 @@ func (lzl *LzlMap) IsExist(k uint64) bool {
 // TemplateField stores all necessary information to render a HTML page
 type TemplateField struct {
 	Title     string
-	Url 	string
+	Url       string
 	ThreadID  uint64
 	Comments  []*OutputField
 	pagesLeft int64

@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	version     = "v0.1.3.4"
+	version     = "v0.1.3.5"
 	numFetcher  = 10
 	numParser   = 50
 	numRenderer = 5
@@ -35,7 +35,7 @@ func init() {
 
 	outputPath := "./output"
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		err = os.Mkdir(outputPath, 0644)
+		err = os.Mkdir(outputPath, 0755)
 		if err != nil {
 			log.Fatalf("Error creating output folder: %v", err)
 		}
@@ -90,21 +90,21 @@ func main() {
 				log.Printf("[Fetch] job done")
 				continue
 			}
-			log.Printf("[Fetch] error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[Fetch] error: %v\n", err)
 		case err, ok := <-errcParse:
 			if !ok {
 				errcParse = nil
 				log.Printf("[Parse] job done")
 				continue
 			}
-			log.Printf("[Parse] error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[Parse] error: %v\n", err)
 		case err, ok := <-errcRender:
 			if !ok {
 				errcRender = nil
 				log.Printf("[Template] job done")
 				continue
 			}
-			log.Printf("[Template] error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[Template] error: %v\n", err)
 		case file, ok := <-outputc:
 			if ok {
 				log.Printf("[Template] %s done\n", file)
