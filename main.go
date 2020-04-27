@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	version     = "v0.1.3.2"
+	version     = "v0.1.3.4"
 	numFetcher  = 10
 	numParser   = 50
 	numRenderer = 5

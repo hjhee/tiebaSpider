@@ -59,7 +59,8 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 						})
 					}
 
-					t.Merge()
+					// no longer merge as requested in issue #8
+					// t.Merge()
 					// t.Unique()
 
 					// #6: remove illegal character in title
