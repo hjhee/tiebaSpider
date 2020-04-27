@@ -55,6 +55,8 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 		}
 		log.Printf("[homepage] Title: %s", title)
 		tf.Title = title
+		// issue #11 add url to page content
+		tf.Url = page.URL.String()
 
 		var pageNum int64
 		if s := doc.Find("span.red").Eq(1); s.Text() == "" {

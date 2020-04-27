@@ -187,6 +187,7 @@ func (lzl *LzlMap) IsExist(k uint64) bool {
 // TemplateField stores all necessary information to render a HTML page
 type TemplateField struct {
 	Title     string
+	Url 	string
 	ThreadID  uint64
 	Comments  []*OutputField
 	pagesLeft int64
