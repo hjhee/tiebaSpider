@@ -19,3 +19,6 @@ output/
 # Releases
 *.zip
 *.7z
+
+# Build artifacts
+tiebaSpider*

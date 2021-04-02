@@ -10,13 +10,14 @@ import (
 )
 
 const (
-	version     = "v0.1.3.5"
 	numFetcher  = 10
 	numParser   = 50
 	numRenderer = 5
 
 	templateName = "template1.html"
 )
+
+var version = "debug"
 
 var outputTemplate *template.Template
 
@@ -61,7 +62,9 @@ func init() {
 }
 
 func main() {
-	println("tiebaSpider", version)
+	println("tiebaSpider")
+	println("version:", version)
+	println("project url: https://github.com/hjhee/tiebaSpider")
 
 	// closing done to force all goroutines to quit
 	// Go Concurrency Patterns: Pipelines and cancellation
