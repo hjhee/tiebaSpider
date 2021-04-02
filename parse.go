@@ -146,6 +146,12 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 		}()
 		defer tf.AddPage(-1)
 		posts.Each(func(i int, s *goquery.Selection) {
+			// filter elements that has more than 4 class (maybe an advertisement, commit 9c82d4e381d1bcd3f801bf5f6c07960fb7d829be)
+			classStr, _ := s.Attr("class") // get class string
+			if len(strings.Fields(classStr)) > 4 {
+				return
+			}
+
 			dataField, ok := s.Attr("data-field")
 			if !ok {
 				// maybe not an error, but an older version of data-field
