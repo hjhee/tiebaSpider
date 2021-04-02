@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-GITVER = `git rev-parse HEAD`
+GITVER = `git describe --tags HEAD`
 
 build:
 	@go build -ldflags "-X main.version=${GITVER}"
