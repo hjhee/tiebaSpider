@@ -12,10 +12,12 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	golangHTMLParser "golang.org/x/net/html"
 )
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -28,7 +30,7 @@ func randStringRunes(n int) string {
 	return string(b)
 }
 
-func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
+func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
 	if err != nil {
 		return fmt.Errorf("error parsing %s: %v", page.URL, err)
@@ -37,6 +39,11 @@ func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback fun
 	posts := doc.Find("div.l_post.j_l_post.l_post_bright")
 	threadRegex := regexp.MustCompile(`\b"?thread_id"?:"?(\d+)"?\b`)
 	match := threadRegex.FindStringSubmatch(string(page.Content))
+	if len(match) < 1 {
+		// network error, retry request
+		go addPageToFetchQueue(done, pc, 10*time.Second, page.URL, HTMLWebHomepage)
+		return fmt.Errorf("unable to parse starting page(title: %s), possibly a network error, readding url to queue %s", findTitle(doc), page.URL)
+	}
 	strInt, _ := strconv.ParseInt(match[1], 10, 64)
 	threadID := uint64(strInt)
 	tf := tmMap.Get(threadID)
@@ -46,15 +53,9 @@ func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback fun
 }
 
 func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
-	err := htmlParse(pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
-		var title string
-		if s := doc.Find("title"); s.Text() == "" {
-			title = randStringRunes(15) // Could not find title, default to random
-		} else {
-			title = s.Text()
-		}
-		log.Printf("[homepage] Title: %s", title)
-		tf.Title = title
+	err := htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
+		tf.Title = findTitle(doc)
+		log.Printf("[homepage] Title: %s", tf.Title)
 		// issue #11 add url to page content
 		tf.Url = page.URL.String()
 
@@ -72,7 +73,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 		tf.pagesLeft = pageNum
 		tf.lzlsLeft = pageNum
 		// fetch all comments and lzls, excluding comments in the first page
-		pc.Add(pageNum - 1 + pageNum)
+		pc.Add(pageNum + pageNum)
 		go func() {
 			for i := int64(2); i <= pageNum; i++ {
 				u := &url.URL{}
@@ -137,7 +138,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	defer pc.Del(1)
 	// log.Printf("[Parse] parsing %s", page.URL.String())
-	err := htmlParse(pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
+	err := htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
 		defer func() {
 			if tf.IsDone() {
 				tf.Send(tmMap.Channel) // avoid duplicate task
@@ -260,9 +261,31 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
 		defer tf.AddLzl(-1)
 		var lzl LzlField
-		err := json.Unmarshal([]byte(string(page.Content)), &lzl)
-		if err != nil {
-			return fmt.Errorf("error parsing content file %s: %v", page.URL.String(), err)
+		var err error
+		contentCandidates := make(chan string, 10)
+		contentCandidates <- string(page.Content)
+		for len(contentCandidates) > 0 {
+			contentBuffer := <-contentCandidates
+			err := json.Unmarshal([]byte(contentBuffer), &lzl)
+			if err != nil {
+				switch err := err.(type) {
+				default:
+					if len(contentCandidates) == 0 {
+						return fmt.Errorf("error parsing content file %s: %v", page.URL.String(), err)
+					}
+				case *json.SyntaxError:
+					// handle corrupted json data, as in #12
+					// example: https://tieba.baidu.com/p/totalComment?fid=572638&pn=0&t=1617364074015&tid=6212415344&red_tag=3017655123
+					if contentBuffer[:err.Offset-1] != `{"errno":null,"errmsg":null}` {
+						fmt.Fprintf(os.Stderr, "[Parser] warning: lzl data corrupted: %s: %s, trying to reparse strings between offset %d", page.URL.String(), contentBuffer, err.Offset)
+						contentCandidates <- contentBuffer[:err.Offset-1]
+					}
+					contentCandidates <- contentBuffer[err.Offset-1:]
+				}
+			}
+			if lzl.ErrMsg == "success" {
+				break
+			}
 		}
 		if lzl.ErrNO != 0 {
 			return fmt.Errorf("error getting data: %s, %s", page.URL.String(), lzl.ErrMsg)
@@ -293,6 +316,13 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 			for i, comment := range v.Info {
 				comment.Index = int64(i)
 				comment.Time = time.Unix(comment.Timestamp, 0).In(time.Local).Format("2006-01-02 15:04")
+				// special rule: remove username ahref in ": 回复 ", as requested in #4
+				strContent := string(comment.Content)
+				if strings.HasPrefix(strContent, "回复 ") {
+					if dom, err := golangHTMLParser.Parse(strings.NewReader(strContent)); err == nil {
+						println(dom)
+					}
+				}
 			}
 			// merge maps
 			// Getting the union of two maps in go
@@ -331,6 +361,7 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 			s := doc.Find("li.lzl_li_pager_s")
 			dataField, ok := s.Attr("data-field")
 			if !ok {
+				go addPageToFetchQueue(done, pc, 3*time.Second, page.URL, page.Type)
 				return fmt.Errorf("error parsing %s: total number of pages is not determinable", page.URL)
 			}
 			var lzlPage LzlPageComment
@@ -475,4 +506,33 @@ func parseHTML(done <-chan struct{}, pc *PageChannel) (<-chan *TemplateField, <-
 		close(tmMap.Channel) // all page parsed, tell renderer to exit
 	}()
 	return tmMap.Channel, errc
+}
+
+func findTitle(doc *goquery.Document) string {
+	var title string
+	if s := doc.Find("title"); s.Text() == "" {
+		title = randStringRunes(15) // Could not find title, default to random
+	} else {
+		title = s.Text()
+	}
+	return title
+}
+
+func addPageToFetchQueue(done <-chan struct{}, pc *PageChannel, delay time.Duration, url *url.URL, pageType HTMLType) {
+	if delay > 0 {
+		select {
+		case <-done:
+			return
+		case <-time.After(delay):
+		}
+	}
+	// add failed task back to jobs
+	select {
+	case <-done:
+		return
+	case pc.send <- &HTMLPage{
+		URL:  url,
+		Type: pageType,
+	}:
+	}
 }

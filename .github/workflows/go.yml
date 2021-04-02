@@ -31,15 +31,15 @@ jobs:
         fi
 
     - name: Build
-      run: go build -v .
+      run: GOOS=windows GOARCH=amd64 go build -v .
 
     - name: Create build artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: build-artifact
+        name: win64
         path: |
           template/
           LICENSE
           README.md
           url.txt
-          tiebaSpider
+          tiebaSpider.exe
