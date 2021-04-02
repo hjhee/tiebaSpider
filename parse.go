@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	golangHTMLParser "golang.org/x/net/html"
 )
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -165,7 +164,7 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 				fmt.Fprintf(os.Stderr, "#%d Error parsing username from %s\n", i, page.URL)
 				return
 			} else {
-				res.UserName = template.HTML(content)
+				res.UserName = template.HTML(handleUserNameEmojiURL(content))
 			}
 
 			res.Content = template.HTML(tiebaPost.Content.Content)
@@ -260,10 +259,12 @@ func requestLzlComment(tid string, pid string, pn string, tp HTMLType, pc *PageC
 func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
 		defer tf.AddLzl(-1)
+		url := page.URL.String()
+		body := string(page.Content)
 		var lzl LzlField
 		var err error
 		contentCandidates := make(chan string, 10)
-		contentCandidates <- string(page.Content)
+		contentCandidates <- body
 		for len(contentCandidates) > 0 {
 			contentBuffer := <-contentCandidates
 			err := json.Unmarshal([]byte(contentBuffer), &lzl)
@@ -271,13 +272,13 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 				switch err := err.(type) {
 				default:
 					if len(contentCandidates) == 0 {
-						return fmt.Errorf("error parsing content file %s: %v", page.URL.String(), err)
+						return fmt.Errorf("error parsing content file %s: %v", url, err)
 					}
 				case *json.SyntaxError:
 					// handle corrupted json data, as in #12
 					// example: https://tieba.baidu.com/p/totalComment?fid=572638&pn=0&t=1617364074015&tid=6212415344&red_tag=3017655123
 					if contentBuffer[:err.Offset-1] != `{"errno":null,"errmsg":null}` {
-						fmt.Fprintf(os.Stderr, "[Parser] warning: lzl data corrupted: %s: %s, trying to reparse strings between offset %d", page.URL.String(), contentBuffer, err.Offset)
+						fmt.Fprintf(os.Stderr, "[Parser] warning: lzl data corrupted: %s: %s, trying to reparse strings between offset %d", url, contentBuffer, err.Offset)
 						contentCandidates <- contentBuffer[:err.Offset-1]
 					}
 					contentCandidates <- contentBuffer[err.Offset-1:]
@@ -288,11 +289,11 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 			}
 		}
 		if lzl.ErrNO != 0 {
-			return fmt.Errorf("error getting data: %s, %s", page.URL.String(), lzl.ErrMsg)
+			return fmt.Errorf("error getting data: %s, %s", url, lzl.ErrMsg)
 		}
 		commentList, ok := lzl.Data["comment_list"]
 		if !ok {
-			return fmt.Errorf("error getting comment_list: %s", page.URL.String())
+			return fmt.Errorf("error getting comment_list: %s", url)
 		}
 		if string(commentList) == "" || string(commentList) == "[]" {
 			return nil // comment list empty, stop
@@ -300,7 +301,7 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 		comments := make(map[uint64]*LzlComment)
 		err = json.Unmarshal([]byte(string(commentList)), &comments)
 		if err != nil {
-			return fmt.Errorf("error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
+			return fmt.Errorf("error parsing comment_list from %s: %v\ncomment_list:\n%s", url, err, commentList)
 		}
 
 		if len(comments) == 0 {
@@ -316,13 +317,8 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 			for i, comment := range v.Info {
 				comment.Index = int64(i)
 				comment.Time = time.Unix(comment.Timestamp, 0).In(time.Local).Format("2006-01-02 15:04")
-				// special rule: remove username ahref in ": 回复 ", as requested in #4
-				strContent := string(comment.Content)
-				if strings.HasPrefix(strContent, "回复 ") {
-					if dom, err := golangHTMLParser.Parse(strings.NewReader(strContent)); err == nil {
-						println(dom)
-					}
-				}
+				comment.UserName = handleUserNameEmojiURL(comment.UserName)
+				comment.Content = template.HTML(reformatLzlUsername(string(comment.Content)))
 			}
 			// merge maps
 			// Getting the union of two maps in go
@@ -346,64 +342,80 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 	return err
 }
 
+func commentParserFcn(url *url.URL, body string, pageType HTMLType, addLzl func(pages int64), appendLzl func(key uint64, value *LzlContent), addQueueFcn func(delay time.Duration, url *url.URL, pageType HTMLType), requestLzlCommentFcn func(tid, pid, pageNum string)) error {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("error parsing %s: %v", url.String(), err)
+	}
+	q := url.Query()
+	tid := q.Get("tid")
+	pid := q.Get("pid")
+	pn := q.Get("pn")
+	if pageType == HTMLLzlHome {
+		s := doc.Find("li.lzl_li_pager_s")
+		dataField, ok := s.Attr("data-field")
+		if !ok {
+			go addQueueFcn(3*time.Second, url, pageType)
+			// go addPageToFetchQueue(done, pc, 3*time.Second, url, pageType)
+			return fmt.Errorf("error parsing %s: total number of pages is not determinable", url)
+		}
+		var lzlPage LzlPageComment
+		err := json.Unmarshal([]byte(dataField), &lzlPage)
+		if err != nil {
+			return fmt.Errorf("LzlPageComment data-field unmarshal failed: %v, url: %s", err, url)
+		}
+		addLzl(int64(lzlPage.TotalPage - 2))
+		// tf.AddLzl(int64(lzlPage.TotalPage - 2))
+		for i := uint64(3); i <= lzlPage.TotalPage; i++ {
+			requestLzlCommentFcn(tid, pid, strconv.Itoa(int(i)))
+			// requestLzlComment(tid, pid, strconv.Itoa(int(i)), HTMLLzl, pc)
+		}
+	}
+	exLzls := doc.Find(".lzl_single_post.j_lzl_s_p")
+	exLzls.Each(func(i int, s *goquery.Selection) {
+		pageNum, _ := strconv.Atoi(pn)
+		key, _ := strconv.Atoi(pid)
+		content, err := s.Find(".lzl_content_main").Html()
+		if err != nil {
+			return
+		}
+		user := s.Find("div.lzl_cnt a.at.j_user_card")
+		userName := user.Text()
+		// userName, ok := user.Attr("username")
+		// if !ok {
+		// 	// userName not found
+		// 	log.Printf("ExLzl: cannot find username for pid=%s, index=%d", pid, i+pageNum*10)
+		// 	return
+		// } else
+		if userName == "" {
+			// user name is empty, try another method
+			log.Printf("ExLzl: please check url: %s", url)
+			return
+		}
+		c := &LzlContent{
+			Index:    int64(i + pageNum*10),
+			UserName: handleUserNameEmojiURL(userName),
+			Content:  template.HTML(reformatLzlUsername(content)),
+			Time:     s.Find(".lzl_time").Text(),
+		}
+		appendLzl(uint64(key), c)
+		// tf.Lzls.Append(uint64(key), c)
+	})
+	return nil
+}
+
 func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
 		defer tf.AddLzl(-1)
-		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
-		if err != nil {
-			return fmt.Errorf("error parsing %s: %v", page.URL, err)
-		}
-		q := page.URL.Query()
-		tid := q.Get("tid")
-		pid := q.Get("pid")
-		pn := q.Get("pn")
-		if page.Type == HTMLLzlHome {
-			s := doc.Find("li.lzl_li_pager_s")
-			dataField, ok := s.Attr("data-field")
-			if !ok {
-				go addPageToFetchQueue(done, pc, 3*time.Second, page.URL, page.Type)
-				return fmt.Errorf("error parsing %s: total number of pages is not determinable", page.URL)
-			}
-			var lzlPage LzlPageComment
-			err := json.Unmarshal([]byte(dataField), &lzlPage)
-			if err != nil {
-				return fmt.Errorf("LzlPageComment data-field unmarshal failed: %v, url: %s", err, page.URL)
-			}
-			tf.AddLzl(int64(lzlPage.TotalPage - 2))
-			for i := uint64(3); i <= lzlPage.TotalPage; i++ {
-				requestLzlComment(tid, pid, strconv.Itoa(int(i)), HTMLLzl, pc)
-			}
-		}
-		exLzls := doc.Find(".lzl_single_post.j_lzl_s_p")
-		exLzls.Each(func(i int, s *goquery.Selection) {
-			pageNum, _ := strconv.Atoi(pn)
-			key, _ := strconv.Atoi(pid)
-			content, err := s.Find(".lzl_content_main").Html()
-			if err != nil {
-				return
-			}
-			user := s.Find("div.lzl_cnt a.at.j_user_card")
-			userName := user.Text()
-			// userName, ok := user.Attr("username")
-			// if !ok {
-			// 	// userName not found
-			// 	log.Printf("ExLzl: cannot find username for pid=%s, index=%d", pid, i+pageNum*10)
-			// 	return
-			// } else
-			if userName == "" {
-				// user name is empty, try another method
-				log.Printf("ExLzl: please check url: %s", page.URL)
-				return
-			}
-			c := &LzlContent{
-				Index:    int64(i + pageNum*10),
-				UserName: userName,
-				Content:  template.HTML(content),
-				Time:     s.Find(".lzl_time").Text(),
-			}
-			tf.Lzls.Append(uint64(key), c)
+		return commentParserFcn(page.URL, string(page.Content), page.Type, func(pages int64) {
+			tf.AddLzl(pages)
+		}, func(key uint64, value *LzlContent) {
+			tf.Lzls.Append(uint64(key), value)
+		}, func(delay time.Duration, url *url.URL, pageType HTMLType) {
+			addPageToFetchQueue(done, pc, delay, url, pageType)
+		}, func(tid, pid, pageNum string) {
+			requestLzlComment(tid, pid, pageNum, HTMLLzl, pc)
 		})
-		return nil
 	})
 	return err
 }
@@ -535,4 +547,45 @@ func addPageToFetchQueue(done <-chan struct{}, pc *PageChannel, delay time.Durat
 		Type: pageType,
 	}:
 	}
+}
+
+func reformatLzlUsername(content string) string {
+	// special rule: remove username ahref in ": 回复 ", as requested in #4
+	content = strings.Trim(content, " ")
+	// fmt.Fprintf(os.Stderr, "before: %s\n", content)
+	if strings.HasPrefix(content, "回复") {
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
+		if err == nil {
+			bodyDOM := doc.Find("body")
+			s := doc.Find("a.at").First()
+			userNameHtml, _ := s.Html()
+			// t.Errorf(userNameHtml)
+			s.ReplaceWithHtml(userNameHtml)
+			content, _ = bodyDOM.Html()
+			// t.Errorf("failed to parse comment data: %v, reason: %s", content, err)
+			// fmt.Fprintf(os.Stderr, "after: %s\n", content)
+		}
+	}
+	return content
+}
+
+func handleUserNameEmojiURL(userName string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(userName))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[handleUserNameEmojiURL] error handling user: %s", userName)
+		return userName
+	}
+	doc.Find("img.nicknameEmoji").Each(func(i int, s *goquery.Selection) {
+		if url, ex := s.Attr("src"); ex {
+			if strings.HasPrefix(url, "//") {
+				// the url needs to add the protocol type
+				s.SetAttr("src", "https:"+url)
+			}
+		}
+	})
+	if content, err := doc.Find("body").Html(); err == nil {
+		return content
+	}
+	content, _ := doc.Html()
+	return content
 }
