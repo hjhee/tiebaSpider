@@ -14,8 +14,12 @@ RUN if [ "${INSTALL_NODE}" = "true" ]; then su vscode -c "umask 0002 && . /usr/l
 #     && apt-get -y install --no-install-recommends <your-package-list-here>
 
 # [Optional] Uncomment the next line to use go get to install anything else you need
-RUN go get -x github.com/PuerkitoBio/goquery
-RUN GOPROXY=https://proxy.golang.org GO111MODULE=on go get golang.org/x/tools/gopls@latest
+RUN su vscode -c "go get -x github.com/PuerkitoBio/goquery"
+RUN su vscode -c "GOPROXY=https://proxy.golang.org GO111MODULE=on go get golang.org/x/tools/gopls@latest"
 
 # [Optional] Uncomment this line to install global node packages.
 # RUN su vscode -c "source /usr/local/share/nvm/nvm.sh && npm install -g <your-package-here>" 2>&1
+
+# debug github actions locally
+# ref: https://github.com/nektos/act
+RUN curl https://raw.githubusercontent.com/nektos/act/master/install.sh | bash

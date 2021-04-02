@@ -33,9 +33,7 @@ jobs:
     - name: Build
       run: go build -v .
 
-  upload:
-    name: Upload
-    - name: Create Artifact
+    - name: Create build artifacts
       uses: actions/upload-artifact@v2
       with:
         name: build-artifact
