@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-    - name: Set up Go 1.13
+    - name: Set up Go 1.16
       uses: actions/setup-go@v1
       with:
-        go-version: 1.13
+        go-version: 1.16
       id: go
 
     - name: Check out code into the Go module directory
@@ -32,3 +32,16 @@ jobs:
 
     - name: Build
       run: go build -v .
+
+  upload:
+    name: Upload
+    - name: Create Artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: build-artifact
+        path: |
+          template/
+          LICENSE
+          README.md
+          url.txt
+          tiebaSpider
