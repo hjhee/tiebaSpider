@@ -31,7 +31,7 @@ func randStringRunes(n int) string {
 func htmlParse(pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
 	if err != nil {
-		return fmt.Errorf("Error parsing %s: %v", page.URL, err)
+		return fmt.Errorf("error parsing %s: %v", page.URL, err)
 	}
 
 	posts := doc.Find("div.l_post.j_l_post.l_post_bright")
@@ -64,7 +64,7 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 		} else {
 			n, err := strconv.Atoi(s.Text())
 			if err != nil {
-				return fmt.Errorf("Error parsing total number of pages: %v", err)
+				return fmt.Errorf("error parsing total number of pages: %v", err)
 			}
 			pageNum = int64(n)
 		}
@@ -214,13 +214,12 @@ func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 	q := u.Query()
 	tid := q.Get("tid")
 	if tid == "" {
-		return fmt.Errorf("Error parsing getting tid from %s", page.URL.String()) // skip illegal URL
+		return fmt.Errorf("error parsing getting tid from %s", page.URL.String()) // skip illegal URL
 	}
 	ret, _ := strconv.Atoi(tid)
 	threadID = uint64(ret)
 
-	var tf *TemplateField
-	tf = tmMap.Get(threadID)
+	var tf = tmMap.Get(threadID)
 	defer func() {
 		if tf.IsDone() {
 			tf.Send(tmMap.Channel) // avoid duplicate task
@@ -263,14 +262,14 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 		var lzl LzlField
 		err := json.Unmarshal([]byte(string(page.Content)), &lzl)
 		if err != nil {
-			return fmt.Errorf("Error parsing content file %s: %v", page.URL.String(), err)
+			return fmt.Errorf("error parsing content file %s: %v", page.URL.String(), err)
 		}
 		if lzl.ErrNO != 0 {
-			return fmt.Errorf("Error getting data: %s, %s", page.URL.String(), lzl.ErrMsg)
+			return fmt.Errorf("error getting data: %s, %s", page.URL.String(), lzl.ErrMsg)
 		}
 		commentList, ok := lzl.Data["comment_list"]
 		if !ok {
-			return fmt.Errorf("Error getting comment_list: %s", page.URL.String())
+			return fmt.Errorf("error getting comment_list: %s", page.URL.String())
 		}
 		if string(commentList) == "" || string(commentList) == "[]" {
 			return nil // comment list empty, stop
@@ -278,7 +277,7 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 		comments := make(map[uint64]*LzlComment)
 		err = json.Unmarshal([]byte(string(commentList)), &comments)
 		if err != nil {
-			return fmt.Errorf("Error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
+			return fmt.Errorf("error parsing comment_list from %s: %v\ncomment_list:\n%s", page.URL.String(), err, commentList)
 		}
 
 		if len(comments) == 0 {
@@ -322,7 +321,7 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 		defer tf.AddLzl(-1)
 		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
 		if err != nil {
-			return fmt.Errorf("Error parsing %s: %v", page.URL, err)
+			return fmt.Errorf("error parsing %s: %v", page.URL, err)
 		}
 		q := page.URL.Query()
 		tid := q.Get("tid")
@@ -332,7 +331,7 @@ func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap 
 			s := doc.Find("li.lzl_li_pager_s")
 			dataField, ok := s.Attr("data-field")
 			if !ok {
-				return fmt.Errorf("Error parsing %s: total number of pages is not determinable", page.URL)
+				return fmt.Errorf("error parsing %s: total number of pages is not determinable", page.URL)
 			}
 			var lzlPage LzlPageComment
 			err := json.Unmarshal([]byte(dataField), &lzlPage)
@@ -387,19 +386,18 @@ func templateParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 	q := u.Query()
 	tid := q.Get("tid")
 	if tid == "" {
-		return fmt.Errorf("Error parsing getting tid from %s", page.URL.String()) // skip illegal URL
+		return fmt.Errorf("error parsing getting tid from %s", page.URL.String()) // skip illegal URL
 	}
 	ret, _ := strconv.Atoi(tid)
 	threadID = uint64(ret)
 
-	var tf *TemplateField
-	tf = tmMap.Get(threadID)
+	var tf = tmMap.Get(threadID)
 
 	tf.mutex.Lock()
 	err := json.Unmarshal([]byte(string(page.Content)), tf)
 	tf.mutex.Unlock()
 	if err != nil {
-		return fmt.Errorf("Error parsing template file %s: %v", page.URL.String(), err)
+		return fmt.Errorf("error parsing template file %s: %v", page.URL.String(), err)
 	}
 	tf.Send(tmMap.Channel)
 

@@ -26,7 +26,7 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 		defer close(errc)
 		in, err := os.OpenFile(filename, os.O_RDONLY, 0644)
 		if err != nil {
-			errc <- fmt.Errorf("Error reading url list: %v", err)
+			errc <- fmt.Errorf("error reading url list: %v", err)
 			return
 		}
 		defer in.Close()
@@ -230,7 +230,7 @@ func fetchHTMLFromURL(page *HTMLPage) error {
 func fetchHTMLFromFile(page *HTMLPage) error {
 	in, err := os.OpenFile(page.URL.Path, os.O_RDONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("Error reading file path from %s: %v", page.URL.Path, err)
+		return fmt.Errorf("error reading file path from %s: %v", page.URL.Path, err)
 	}
 	defer in.Close()
 	reader := bufio.NewReader(in)

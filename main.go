@@ -84,9 +84,10 @@ func main() {
 			log.Printf("Job done!\n")
 			break
 		}
+	parseSelect:
 		select {
 		case <-done:
-			break
+			break parseSelect
 		case err, ok := <-errcFetch:
 			if !ok {
 				errcFetch = nil
