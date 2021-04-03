@@ -4,7 +4,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -18,7 +17,7 @@ var lzlTotalCommentTestString = `<li class="lzl_single_post j_lzl_s_p first_no_b
 func TestTotalCommentParserFcn(t *testing.T) {
 	u := &url.URL{}
 	body := lzlTotalCommentTestString
-	commentParserFcn(u, body, HTMLLzl, func(int64) {}, func(key uint64, value *LzlContent) {
+	commentParserFcn(u, body, HTMLLzl, func(key uint64, value *LzlContent) {
 		// special rule: remove username ahref in ": 回复 ", as requested in #4
 		strContent := string(value.Content)
 		content := strings.Trim(strContent, " ")
@@ -34,5 +33,5 @@ func TestTotalCommentParserFcn(t *testing.T) {
 			s.ReplaceWithHtml(userNameHtml)
 			t.Errorf(bodyDOM.Html())
 		}
-	}, func(delay time.Duration, url *url.URL, pageType HTMLType) {}, func(string, string, string) {})
+	}, func(string, string, string) {})
 }

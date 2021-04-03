@@ -9,15 +9,13 @@ import (
 	"time"
 )
 
-const (
-	numFetcher  = 10
-	numParser   = 50
-	numRenderer = 5
-
-	templateName = "template1.html"
-)
+var numFetcher = 10
+var numParser = 50
+var numRenderer = 5
+var templateName = "template1.html"
 
 var version = "debug"
+var retryPeriod = 10
 
 var outputTemplate *template.Template
 

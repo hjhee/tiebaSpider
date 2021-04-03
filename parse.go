@@ -30,9 +30,13 @@ func randStringRunes(n int) string {
 }
 
 func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
+	defer pc.Del(1)
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
 	if err != nil {
-		return fmt.Errorf("error parsing %s: %v", page.URL, err)
+		// network error, retry request
+		pc.Add(1)
+		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+		return fmt.Errorf("error parsing %s(title: %s): %v", page.URL, findTitle(doc), err)
 	}
 
 	posts := doc.Find("div.l_post.j_l_post.l_post_bright")
@@ -40,19 +44,32 @@ func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *Tem
 	match := threadRegex.FindStringSubmatch(string(page.Content))
 	if len(match) < 1 {
 		// network error, retry request
-		go addPageToFetchQueue(done, pc, 10*time.Second, page.URL, HTMLWebHomepage)
-		return fmt.Errorf("unable to parse starting page(title: %s), possibly a network error, readding url to queue %s", findTitle(doc), page.URL)
+		pc.Add(1)
+		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+		return fmt.Errorf("unable to parse page(title: %s), possibly a network error, readding url to queue %s", findTitle(doc), page.URL)
 	}
 	strInt, _ := strconv.ParseInt(match[1], 10, 64)
 	threadID := uint64(strInt)
 	tf := tmMap.Get(threadID)
 	err = callback(tf, doc, posts)
 	// page.Response.Body.Close()
+	if err != nil {
+		pc.Add(1)
+		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+	} else {
+		tf.AddPage(-1)
+		if tf.IsDone() {
+			// fmt.Fprintf(os.Stderr, "IsDone() in htmlParse: %d, %d\n", tf.lzlsLeft, tf.pagesLeft)
+			tf.Send(tmMap.Channel) // avoid duplicate task
+			// tmMap.Channel <- tf
+		}
+	}
+
 	return err
 }
 
 func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
-	err := htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
+	return htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
 		tf.Title = findTitle(doc)
 		log.Printf("[homepage] Title: %s", tf.Title)
 		// issue #11 add url to page content
@@ -72,7 +89,9 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 		tf.pagesLeft = pageNum
 		tf.lzlsLeft = pageNum
 		// fetch all comments and lzls, excluding comments in the first page
-		pc.Add(pageNum + pageNum)
+		// pageNum - 1: html page 2~pageNum
+		// pageNum + 1: lzl page 0~pageNum
+		pc.Add(pageNum - 1 + pageNum + 1)
 		go func() {
 			for i := int64(2); i <= pageNum; i++ {
 				u := &url.URL{}
@@ -126,113 +145,109 @@ func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 			}
 		}()
 
-		return nil
+		return pageParserFcn(page, tf, doc, posts)
 	})
-	if err != nil {
-		return err
-	}
-	return pageParser(done, page, pc, tmMap)
+}
+
+func pageParserFcn(page *HTMLPage, tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
+	posts.Each(func(i int, s *goquery.Selection) {
+		// filter elements that has more than 4 class (maybe an advertisement, commit 9c82d4e381d1bcd3f801bf5f6c07960fb7d829be)
+		classStr, _ := s.Attr("class") // get class string
+		if len(strings.Fields(classStr)) > 4 {
+			return
+		}
+
+		dataField, ok := s.Attr("data-field")
+		if !ok {
+			// maybe not an error, but an older version of data-field
+			fmt.Fprintf(os.Stderr, "#%d data-field not found: %s\n", i, page.URL) // there's a error on the page, maybe Tieba updated the syntax
+			return
+		}
+
+		var tiebaPost TiebaField
+		var res OutputField
+		err := json.Unmarshal([]byte(dataField), &tiebaPost)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "#%d data-field unmarshal failed: %v, url: %s\n", i, err, page.URL) // there's a error on the page, maybe Tieba updated the syntax
+			return
+		}
+		if content, err := s.Find("div.d_author ul.p_author li.d_name a.p_author_name.j_user_card").Html(); err != nil {
+			fmt.Fprintf(os.Stderr, "#%d Error parsing username from %s\n", i, page.URL)
+			return
+		} else {
+			res.UserName = template.HTML(handleUserNameEmojiURL(content))
+		}
+
+		res.Content = template.HTML(tiebaPost.Content.Content)
+		res.PostNO = tiebaPost.Content.PostNO
+		res.PostID = tiebaPost.Content.PostID
+
+		if res.Content == "" {
+			// data-field does not contain content
+			// infer an old version of posts
+			postID := fmt.Sprintf("#post_content_%d", res.PostID)
+			content, err := posts.Find(postID).Html()
+			if err != nil {
+				log.Printf("#%d: post_content_%d parse failed, %s", i, res.PostID, err)
+			} else {
+				res.Content = template.HTML(content)
+			}
+		}
+
+		// get post time
+		// Jquery过滤选择器，选择前几个元素，后几个元素，内容过滤选择器等
+		// http://www.cnblogs.com/alone2015/p/4962687.html
+		res.Time = s.Find("span.tail-info:nth-child(4)").Text() // posted from device other than PC
+		if res.Time == "" {
+			res.Time = s.Find("span.tail-info:nth-child(3)").Text() // posted from PC
+		}
+
+		tf.Append(&res)
+		// log.Printf("#%d data-field found: %v\n", i, tiebaPost)
+		// log.Printf("#%d data-field found:\nauthor: %s\ncontent: %s\n",
+		// 	tiebaPost.Content.PostNo,
+		// 	tiebaPost.Author.UserName,
+		// 	tiebaPost.Content.Content)
+
+		// result.Posts <- &res
+	})
+	return nil
 }
 
 func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
-	defer pc.Del(1)
 	// log.Printf("[Parse] parsing %s", page.URL.String())
-	err := htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
-		defer func() {
-			if tf.IsDone() {
-				tf.Send(tmMap.Channel) // avoid duplicate task
-				// tmMap.Channel <- tf
-			}
-		}()
-		defer tf.AddPage(-1)
-		posts.Each(func(i int, s *goquery.Selection) {
-			// filter elements that has more than 4 class (maybe an advertisement, commit 9c82d4e381d1bcd3f801bf5f6c07960fb7d829be)
-			classStr, _ := s.Attr("class") // get class string
-			if len(strings.Fields(classStr)) > 4 {
-				return
-			}
-
-			dataField, ok := s.Attr("data-field")
-			if !ok {
-				// maybe not an error, but an older version of data-field
-				fmt.Fprintf(os.Stderr, "#%d data-field not found: %s\n", i, page.URL) // there's a error on the page, maybe Tieba updated the syntax
-				return
-			}
-
-			var tiebaPost TiebaField
-			var res OutputField
-			err := json.Unmarshal([]byte(dataField), &tiebaPost)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "#%d data-field unmarshal failed: %v, url: %s\n", i, err, page.URL) // there's a error on the page, maybe Tieba updated the syntax
-				return
-			}
-			if content, err := s.Find("div.d_author ul.p_author li.d_name a.p_author_name.j_user_card").Html(); err != nil {
-				fmt.Fprintf(os.Stderr, "#%d Error parsing username from %s\n", i, page.URL)
-				return
-			} else {
-				res.UserName = template.HTML(handleUserNameEmojiURL(content))
-			}
-
-			res.Content = template.HTML(tiebaPost.Content.Content)
-			res.PostNO = tiebaPost.Content.PostNO
-			res.PostID = tiebaPost.Content.PostID
-
-			if res.Content == "" {
-				// data-field does not contain content
-				// infer an old version of posts
-				postID := fmt.Sprintf("#post_content_%d", res.PostID)
-				content, err := posts.Find(postID).Html()
-				if err != nil {
-					log.Printf("#%d: post_content_%d parse failed, %s", i, res.PostID, err)
-				} else {
-					res.Content = template.HTML(content)
-				}
-			}
-
-			// get post time
-			// Jquery过滤选择器，选择前几个元素，后几个元素，内容过滤选择器等
-			// http://www.cnblogs.com/alone2015/p/4962687.html
-			res.Time = s.Find("span.tail-info:nth-child(4)").Text() // posted from device other than PC
-			if res.Time == "" {
-				res.Time = s.Find("span.tail-info:nth-child(3)").Text() // posted from PC
-			}
-
-			tf.Append(&res)
-			// log.Printf("#%d data-field found: %v\n", i, tiebaPost)
-			// log.Printf("#%d data-field found:\nauthor: %s\ncontent: %s\n",
-			// 	tiebaPost.Content.PostNo,
-			// 	tiebaPost.Author.UserName,
-			// 	tiebaPost.Content.Content)
-
-			// result.Posts <- &res
-		})
-		return nil
+	return htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) (err error) {
+		return pageParserFcn(page, tf, doc, posts)
 	})
-	return err
 }
 
 // parse lzl comment, JSON formatted
 func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, callback func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error) error {
 	defer pc.Del(1)
-	var threadID uint64
-
 	u := page.URL
 	q := u.Query()
 	tid := q.Get("tid")
 	if tid == "" {
-		return fmt.Errorf("error parsing getting tid from %s", page.URL.String()) // skip illegal URL
+		return fmt.Errorf("error parsing getting tid from %s", page.URL) // skip illegal URL
 	}
 	ret, _ := strconv.Atoi(tid)
-	threadID = uint64(ret)
+	threadID := uint64(ret)
 
-	var tf = tmMap.Get(threadID)
-	defer func() {
+	tf := tmMap.Get(threadID)
+	defer tf.AddLzl(-1)
+	err := callback(done, page, pc, tmMap, tf)
+	if err != nil {
+		pc.Add(1)
+		tf.AddLzl(1)
+		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+	} else {
 		if tf.IsDone() {
+			// fmt.Fprintf(os.Stderr, "IsDone() in jsonParser: %d, %d\n", tf.lzlsLeft, tf.pagesLeft)
 			tf.Send(tmMap.Channel) // avoid duplicate task
 			// tmMap.Channel <- tf
 		}
-	}()
-	return callback(done, page, pc, tmMap, tf)
+	}
+	return err
 }
 
 func requestLzlComment(tid string, pid string, pn string, tp HTMLType, pc *PageChannel) {
@@ -253,18 +268,14 @@ func requestLzlComment(tid string, pid string, pn string, tp HTMLType, pc *PageC
 
 	// log.Printf("requesting %s", u)
 
-	pc.Add(1)
-	go func() {
-		pc.send <- &HTMLPage{
-			URL:  u,
-			Type: tp,
-		}
-	}()
+	pc.send <- &HTMLPage{
+		URL:  u,
+		Type: tp,
+	}
 }
 
 func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
-	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
-		defer tf.AddLzl(-1)
+	return jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
 		url := page.URL.String()
 		body := string(page.Content)
 		var lzl LzlField
@@ -293,6 +304,9 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 			if lzl.ErrMsg == "success" {
 				break
 			}
+		}
+		if lzl.ErrMsg != "success" {
+			return fmt.Errorf("unable to find json lzl with ErrMsg(\"success\"), last message was: %s", body)
 		}
 		if lzl.ErrNO != 0 {
 			return fmt.Errorf("error getting data: %s, %s", url, lzl.ErrMsg)
@@ -338,17 +352,17 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 					copy(newSlice, v.Info)
 					v.Info = newSlice
 				}
+				pc.Add(1)
 				tf.AddLzl(1)
-				requestLzlComment(strconv.Itoa(int(tf.ThreadID)), strconv.Itoa(int(pid)), "2", HTMLLzlHome, pc)
+				go requestLzlComment(strconv.Itoa(int(tf.ThreadID)), strconv.Itoa(int(pid)), "2", HTMLLzlHome, pc)
 			}
 			tf.Lzls.Insert(pid, v) // merge maps
 		}
 		return nil
 	})
-	return err
 }
 
-func commentParserFcn(url *url.URL, body string, pageType HTMLType, addLzl func(pages int64), appendLzl func(key uint64, value *LzlContent), addQueueFcn func(delay time.Duration, url *url.URL, pageType HTMLType), requestLzlCommentFcn func(tid, pid, pageNum string)) error {
+func commentParserFcn(url *url.URL, body string, pageType HTMLType, appendLzl func(key uint64, value *LzlContent), requestLzlCommentFcn func(tid, pid, pageNum string)) error {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("error parsing %s: %v", url.String(), err)
@@ -361,8 +375,6 @@ func commentParserFcn(url *url.URL, body string, pageType HTMLType, addLzl func(
 		s := doc.Find("li.lzl_li_pager_s")
 		dataField, ok := s.Attr("data-field")
 		if !ok {
-			go addQueueFcn(3*time.Second, url, pageType)
-			// go addPageToFetchQueue(done, pc, 3*time.Second, url, pageType)
 			return fmt.Errorf("error parsing %s: total number of pages is not determinable", url)
 		}
 		var lzlPage LzlPageComment
@@ -370,7 +382,6 @@ func commentParserFcn(url *url.URL, body string, pageType HTMLType, addLzl func(
 		if err != nil {
 			return fmt.Errorf("LzlPageComment data-field unmarshal failed: %v, url: %s", err, url)
 		}
-		addLzl(int64(lzlPage.TotalPage - 2))
 		// tf.AddLzl(int64(lzlPage.TotalPage - 2))
 		for i := uint64(3); i <= lzlPage.TotalPage; i++ {
 			requestLzlCommentFcn(tid, pid, strconv.Itoa(int(i)))
@@ -411,19 +422,15 @@ func commentParserFcn(url *url.URL, body string, pageType HTMLType, addLzl func(
 }
 
 func commentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
-	err := jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
-		defer tf.AddLzl(-1)
-		return commentParserFcn(page.URL, string(page.Content), page.Type, func(pages int64) {
-			tf.AddLzl(pages)
-		}, func(key uint64, value *LzlContent) {
+	return jsonParser(done, page, pc, tmMap, func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error {
+		return commentParserFcn(page.URL, string(page.Content), page.Type, func(key uint64, value *LzlContent) {
 			tf.Lzls.Append(uint64(key), value)
-		}, func(delay time.Duration, url *url.URL, pageType HTMLType) {
-			addPageToFetchQueue(done, pc, delay, url, pageType)
 		}, func(tid, pid, pageNum string) {
-			requestLzlComment(tid, pid, pageNum, HTMLLzl, pc)
+			pc.Add(1)
+			tf.AddLzl(1)
+			go requestLzlComment(tid, pid, pageNum, HTMLLzl, pc)
 		})
 	})
-	return err
 }
 
 // parse templateField from local file, JSON formatted

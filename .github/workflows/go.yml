@@ -31,7 +31,7 @@ jobs:
         fi
 
     - name: Build
-      run: GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(git describe --tags HEAD)" -v .
+      run: GOOS=windows GOARCH=amd64 go build -v .
 
     - name: Create build artifacts
       uses: actions/upload-artifact@v2
