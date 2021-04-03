@@ -29,7 +29,7 @@ func randStringRunes(n int) string {
 	return string(b)
 }
 
-func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
+func htmlParseWrapperFcn(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, querySelector, threadSelector string, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
 	defer pc.Del(1)
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.Content))
 	if err != nil {
@@ -39,8 +39,8 @@ func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *Tem
 		return fmt.Errorf("error parsing %s(title: %s): %v", page.URL, findTitle(doc), err)
 	}
 
-	posts := doc.Find("div.l_post.j_l_post.l_post_bright")
-	threadRegex := regexp.MustCompile(`\b"?thread_id"?:"?(\d+)"?\b`)
+	posts := doc.Find(querySelector)
+	threadRegex := regexp.MustCompile(threadSelector)
 	match := threadRegex.FindStringSubmatch(string(page.Content))
 	if len(match) < 1 {
 		// network error, retry request
@@ -68,84 +68,49 @@ func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *Tem
 	return err
 }
 
+func htmlParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
+	// posts := doc.Find("div.l_post.j_l_post.l_post_bright")
+	// threadRegex := regexp.MustCompile(`\b"?thread_id"?:"?(\d+)"?\b`)
+	return htmlParseWrapperFcn(done, pc, page, tmMap, "div.l_post.j_l_post.l_post_bright", `\b"?thread_id"?:"?(\d+)"?\b`, callback)
+}
+
+func homePageParserFcn(done <-chan struct{}, pc *PageChannel, tf *TemplateField, doc *goquery.Document, posts *goquery.Selection, page *HTMLPage, pageTitleFinder func(doc *goquery.Document) string, pageNumFinder func(doc *goquery.Document) (int64, error), pageType HTMLType, parserFcn func(page *HTMLPage, tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
+	tf.Title = pageTitleFinder(doc)
+	log.Printf("[homepage] Title: %s", tf.Title)
+	// issue #11 add url to page content
+	tf.Url = page.URL.String()
+
+	pageNum, err := pageNumFinder(doc)
+	if err != nil {
+		return fmt.Errorf("error parsing total number of pages: %v", err)
+	}
+
+	tf.pagesLeft = pageNum
+	tf.lzlsLeft = pageNum
+	// fetch all comments and lzls, excluding comments in the first page
+	// pageNum - 1: html page 2~pageNum
+	// pageNum + 1: lzl page 0~pageNum
+	pc.Add(pageNum - 1 + pageNum + 1)
+	go addPageToFetchQueueFromHomePage(done, pc, page.URL, tf.ThreadID, pageNum, pageType)
+
+	return parserFcn(page, tf, doc, posts)
+}
+
 func homepageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
 	return htmlParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
-		tf.Title = findTitle(doc)
-		log.Printf("[homepage] Title: %s", tf.Title)
-		// issue #11 add url to page content
-		tf.Url = page.URL.String()
-
-		var pageNum int64
-		if s := doc.Find("span.red").Eq(1); s.Text() == "" {
-			pageNum = 1 // Could not find total number of pages, default to 1
-		} else {
-			n, err := strconv.Atoi(s.Text())
-			if err != nil {
-				return fmt.Errorf("error parsing total number of pages: %v", err)
+		return homePageParserFcn(done, pc, tf, doc, posts, page, findTitle, func(doc *goquery.Document) (int64, error) {
+			var pageNum int64
+			if s := doc.Find("span.red").Eq(1); s.Text() == "" {
+				pageNum = 1 // Could not find total number of pages, default to 1
+			} else {
+				n, err := strconv.Atoi(s.Text())
+				if err != nil {
+					return 0, fmt.Errorf("error parsing total number of pages: %v", err)
+				}
+				pageNum = int64(n)
 			}
-			pageNum = int64(n)
-		}
-
-		tf.pagesLeft = pageNum
-		tf.lzlsLeft = pageNum
-		// fetch all comments and lzls, excluding comments in the first page
-		// pageNum - 1: html page 2~pageNum
-		// pageNum + 1: lzl page 0~pageNum
-		pc.Add(pageNum - 1 + pageNum + 1)
-		go func() {
-			for i := int64(2); i <= pageNum; i++ {
-				u := &url.URL{}
-				*u = *page.URL
-				q := u.Query()
-				q.Set("pn", strconv.Itoa(int(i)))
-				u.RawQuery = q.Encode()
-				newPage := &HTMLPage{
-					URL:  u, // example: https://tieba.baidu.com/p/3922635509?pn=2
-					Type: HTMLWebPage,
-				}
-				select {
-				case <-done:
-					return
-				case pc.send <- newPage: // add all other pages to fetcher
-				}
-			}
-
-			forumRegex := regexp.MustCompile(`\b"?forum_id"?:"?(\d+)"?\b`)
-			match := forumRegex.FindStringSubmatch(string(page.Content))
-			strInt, _ := strconv.ParseInt(match[1], 10, 64)
-			forumID := uint64(strInt)
-			// fetch lzl comments
-			// syntax:
-			// http://tieba.baidu.com/p/totalComment?t=1501582373&tid=3922635509&fid=867983&pn=2&see_lz=0
-			// python爬取贴吧楼中楼
-			// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
-			for i := int64(0); i <= pageNum; i++ {
-				u := &url.URL{
-					Scheme: "http",
-					Host:   "tieba.baidu.com",
-					Path:   "/p/totalComment",
-				}
-				q := u.Query()
-				// Go by Example: Epoch
-				// https://gobyexample.com/epoch
-				q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
-				q.Set("tid", strconv.Itoa(int(tf.ThreadID)))
-				q.Set("fid", strconv.Itoa(int(forumID)))
-				q.Set("pn", strconv.Itoa(int(i)))
-				u.RawQuery = q.Encode()
-				// log.Printf("requesting totalComment: %s", u)
-				select {
-				case <-done:
-					return
-				case pc.send <- &HTMLPage{
-					URL:  u,
-					Type: HTMLJSON,
-				}:
-				}
-			}
-		}()
-
-		return pageParserFcn(page, tf, doc, posts)
+			return pageNum, nil
+		}, HTMLWebPage, pageParserFcn)
 	})
 }
 
@@ -221,6 +186,81 @@ func pageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 	})
 }
 
+func wapParse(done <-chan struct{}, pc *PageChannel, page *HTMLPage, tmMap *TemplateMap, callback func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error) error {
+	// posts := doc.Find("div.i")
+	// threadRegex := regexp.MustCompile(`kz=(\d+)`)
+	return htmlParseWrapperFcn(done, pc, page, tmMap, "div.i", `kz=(\d+)`, callback)
+}
+
+func wapHomePageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+	return wapParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
+		return homePageParserFcn(done, pc, tf, doc, posts, page, findWapTitle, func(doc *goquery.Document) (int64, error) {
+			var pageNum int64
+			pageNumMatcher := regexp.MustCompile(`第\d+/(\d+)页`)
+			matches := pageNumMatcher.FindStringSubmatch(doc.Find("div.h").Text())
+			if len(matches) > 1 {
+				n, err := strconv.Atoi(matches[1])
+				if err != nil {
+					return 0, fmt.Errorf("error parsing total number of pages: %v", err)
+				}
+				pageNum = int64(n)
+			} else {
+				pageNum = 1 // Could not find total number of pages, default to 1
+			}
+			return pageNum, nil
+		}, HTMLWebWAPPage, wapParserFcn)
+	})
+}
+
+func wapParserFcn(page *HTMLPage, tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) error {
+	postMatcher := regexp.MustCompile(`^(\d+)楼. (.*)<br/>`)
+	posts.Each(func(i int, s *goquery.Selection) {
+		var res OutputField
+		if content, err := s.Find(".g > a").Html(); err != nil {
+			fmt.Fprintf(os.Stderr, "#%d Error parsing username from %s\n", i, page.URL)
+			return
+		} else {
+			res.UserName = template.HTML(handleUserNameEmojiURL(content))
+		}
+
+		sBody, _ := s.Html()
+		sTable, _ := s.Find("table").Html()
+		sContent := strings.ReplaceAll(sBody, fmt.Sprintf("<table>%s</table>", sTable), "")
+		if matches := postMatcher.FindStringSubmatch(string(sContent)); len(matches) < 3 {
+			fmt.Fprintf(os.Stderr, "#%d Error parsing post content from %s\n", i, page.URL)
+			return
+		} else {
+			n, err := strconv.Atoi(matches[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error parsing post number: %v", err)
+				return
+			}
+			res.PostNO = uint64(n)
+			res.Content = template.HTML(matches[2])
+		}
+		// res.PostID = tiebaPost.Content.PostID
+		if sReply, ok := s.Find(".r>a").Attr("href"); ok {
+			if replyUrl, err := url.Parse(sReply); err == nil {
+				pid := replyUrl.Query().Get("pid")
+				if n, err := strconv.Atoi(pid); err == nil {
+					res.PostID = uint64(n)
+				}
+			}
+		}
+		res.Time = s.Find(".b").Text()
+
+		tf.Append(&res)
+	})
+	return nil
+}
+
+func wapPageParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+	// log.Printf("[Parse] parsing %s", page.URL.String())
+	return wapParse(done, pc, page, tmMap, func(tf *TemplateField, doc *goquery.Document, posts *goquery.Selection) (err error) {
+		return wapParserFcn(page, tf, doc, posts)
+	})
+}
+
 // parse lzl comment, JSON formatted
 func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, callback func(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap, tf *TemplateField) error) error {
 	defer pc.Del(1)
@@ -253,16 +293,16 @@ func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 func requestLzlComment(tid string, pid string, pn string, tp HTMLType, pc *PageChannel) {
 	// there are more lzls to fetch
 	// url syntax:
-	// url example: https://tieba.baidu.com/p/comment?tid=5381698176&pid=114248941589&pn=4&t=1517692202100
+	// url example: https://tieba.baidu.com/p/comment?tid=7201761174&pn=4
 	u := &url.URL{
 		Scheme: "http",
 		Host:   "tieba.baidu.com",
 		Path:   "/p/comment",
 	}
 	q := u.Query()
-	q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
+	// q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
 	q.Set("tid", tid)
-	q.Set("pid", pid)
+	// q.Set("pid", pid)
 	q.Set("pn", pn) // start fetching additional comment from page 2
 	u.RawQuery = q.Encode()
 
@@ -497,6 +537,16 @@ func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *Pag
 				if err != nil {
 					errc <- err
 				}
+			case HTMLWebWAPHomepage:
+				err = wapHomePageParser(done, p, pc, tmMap)
+				if err != nil {
+					errc <- err
+				}
+			case HTMLWebWAPPage:
+				err = wapPageParser(done, p, pc, tmMap)
+				if err != nil {
+					errc <- err
+				}
 			default:
 				errc <- errors.New("unkonwn HTMLPage Type")
 			}
@@ -539,6 +589,19 @@ func findTitle(doc *goquery.Document) string {
 		title = randStringRunes(15) // Could not find title, default to random
 	} else {
 		title = s.Text()
+	}
+	return title
+}
+
+func findWapTitle(doc *goquery.Document) string {
+	var title string
+	if s := doc.Find(".bc > strong:nth-child(1)"); s.Text() == "" {
+		title = randStringRunes(15) // Could not find title, default to random
+	} else {
+		title = s.Text()
+	}
+	if s := doc.Find("div.d.h ~ a").First(); s.Text() != "" {
+		title = fmt.Sprintf("%s_%s_wap", title, s.Text())
 	}
 	return title
 }
@@ -601,4 +664,62 @@ func handleUserNameEmojiURL(userName string) string {
 	}
 	content, _ := doc.Html()
 	return content
+}
+
+func addPageToFetchQueueFromHomePage(done <-chan struct{}, pc *PageChannel, urlRef *url.URL, tid uint64, pageNum int64, pageType HTMLType) {
+	for i := int64(2); i <= pageNum; i++ {
+		u := &url.URL{}
+		*u = *urlRef
+		q := u.Query()
+		switch pageType {
+		case HTMLWebPage:
+			q.Set("pn", strconv.Itoa(int(i)))
+		case HTMLWebWAPPage:
+			q.Set("pnum", strconv.Itoa(int(i)))
+		}
+		u.RawQuery = q.Encode()
+		newPage := &HTMLPage{
+			URL:  u, // example: http://tieba.baidu.com/mo/m?kz=7201761174&pnum=2
+			Type: pageType,
+		}
+		select {
+		case <-done:
+			return
+		case pc.send <- newPage: // add all other pages to fetcher
+		}
+	}
+
+	// forumRegex := regexp.MustCompile(`\b"?forum_id"?:"?(\d+)"?\b`)
+	// match := forumRegex.FindStringSubmatch(string(page.Content))
+	// strInt, _ := strconv.ParseInt(match[1], 10, 64)
+	// forumID := uint64(strInt)
+	// fetch lzl comments
+	// syntax:
+	// http://tieba.baidu.com/p/totalComment?t=15769421323&tid=7201761174&fid=572638&pn=2&see_lz=0
+	// python爬取贴吧楼中楼
+	// https://mrxin.github.io/2015/09/19/tieba-louzhonglou/
+	for i := int64(0); i <= pageNum; i++ {
+		u := &url.URL{
+			Scheme: "http",
+			Host:   "tieba.baidu.com",
+			Path:   "/p/totalComment",
+		}
+		q := u.Query()
+		// Go by Example: Epoch
+		// https://gobyexample.com/epoch
+		// q.Set("t", strconv.Itoa(int(time.Now().UnixNano()/1000000)))
+		q.Set("tid", strconv.Itoa(int(tid)))
+		// q.Set("fid", strconv.Itoa(int(forumID)))
+		q.Set("pn", strconv.Itoa(int(i)))
+		u.RawQuery = q.Encode()
+		// log.Printf("requesting totalComment: %s", u)
+		select {
+		case <-done:
+			return
+		case pc.send <- &HTMLPage{
+			URL:  u,
+			Type: HTMLJSON,
+		}:
+		}
+	}
 }

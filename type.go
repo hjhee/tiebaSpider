@@ -75,6 +75,12 @@ const (
 
 	// HTMLLocal is a local HTML or JSON file
 	HTMLLocal
+
+	// HTMLWebWAPHomepage is the first page of a wap post
+	HTMLWebWAPHomepage
+
+	// HTMLWebWAPPage supports fetching wap posts
+	HTMLWebWAPPage
 )
 
 // HTMLPage is a job for fetcher and parser
@@ -280,19 +286,17 @@ func (t *TemplateField) Merge() {
 	}
 }
 
-// Unique removes any duplicate posts
-// too naive
-// TODO: improve result with NLP technique
+// Unique removes any duplicate posts using PoseNO
 func (t *TemplateField) Unique() {
 	// Idiomatic way to remove duplicates in a slice
 	// https://www.reddit.com/r/golang/comments/5ia523/idiomatic_way_to_remove_duplicates_in_a_slice/db6qa2e/
-	seen := make(map[template.HTML]struct{}, len(t.Comments))
+	seen := make(map[uint64]struct{}, len(t.Comments))
 	j := 0
 	for _, v := range t.Comments {
-		if _, ok := seen[v.Content]; ok {
+		if _, ok := seen[v.PostNO]; ok {
 			continue
 		}
-		seen[v.Content] = struct{}{}
+		seen[v.PostNO] = struct{}{}
 		t.Comments[j] = v
 		j++
 	}

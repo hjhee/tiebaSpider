@@ -32,7 +32,8 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 		defer in.Close()
 		reader := bufio.NewReader(in)
 
-		validURL := regexp.MustCompile(`^/p/([0-9]+)$`) // example: ^/p/3922635509$
+		validURL := regexp.MustCompile(`^/p/([0-9]+)$`) // example: ^/p/7201761174$
+		wapURL := regexp.MustCompile(`^/mo/m$`)         // example: "/mo/m?kz=7201761174"
 
 		// reading file line by line in go
 		// https://stackoverflow.com/a/41741702/6091246
@@ -65,21 +66,23 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 					continue
 				}
 			} else {
-				pageType = HTMLWebHomepage
 				if u.Host != "tieba.baidu.com" {
 					log.Printf("[Fetch] URL host %s is not Tieba, skipping", u)
 					continue
 				}
 
-				if match := validURL.Match([]byte(u.Path)); !match {
+				if match := validURL.MatchString(u.Path); match {
+					pageType = HTMLWebHomepage
+					// strip query from url
+					// URL Builder/Query builder in Go
+					// https://stackoverflow.com/a/26987017/6091246
+					u.RawQuery = ""
+				} else if match = wapURL.MatchString(u.Path); match {
+					pageType = HTMLWebWAPHomepage
+				} else {
 					log.Printf("[Fetch] %s is not a valid Tieba post URL, skipping", u)
 					continue
 				}
-
-				// strip query from url
-				// URL Builder/Query builder in Go
-				// https://stackoverflow.com/a/26987017/6091246
-				u.RawQuery = ""
 			}
 
 			// log.Printf("[Fetch] Got new url from list: %v\n", u)
