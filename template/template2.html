@@ -45,6 +45,26 @@
     <hr />
   </div>
   {{end}}
+  <script>
+    function substitueRawImageSrc() {
+      let imgs = document.getElementsByTagName('img');
+      for (let img of imgs) {
+        let src = new URL(img.getAttribute('src'));
+        // http://tiebapic.baidu.com/forum/w%3D580/sign=fa9bff75584a20a4311e3ccfa0539847/2ca3b6096b63f624d2ed9e649044ebf81b4ca366.jpg
+        if (src.hostname !== 'tiebapic.baidu.com') {
+          continue;
+        }
+        let imageName = src.pathname.substring(src.pathname.lastIndexOf('/') + 1);
+        img.onerror = () => {
+          console.log(`image loading failed: ${imageName}`);
+        };
+        // console.log(imageName);
+        img.setAttribute('src', `http://tiebapic.baidu.com/forum/pic/item/${imageName}`);
+
+      }
+    }
+    substitueRawImageSrc();
+  </script>
 </body>
 
 </html>

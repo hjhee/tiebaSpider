@@ -1,0 +1,5 @@
+numFetcher = 10
+numParser = 50
+numRenderer = 5
+templateName = "template1.html"
+retryPeriod = 10

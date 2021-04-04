@@ -16,7 +16,7 @@ import (
 )
 
 func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan error) {
-	feed := make(chan *HTMLPage, numFetcher)
+	feed := make(chan *HTMLPage, config.NumFetcher)
 	ret, retErr := spawnFetcher(done, feed)
 
 	pc := &PageChannel{send: feed, rec: ret}
@@ -170,8 +170,8 @@ func fetcher(done <-chan struct{}, wg *sync.WaitGroup, jobsLeft *int64, ret chan
 }
 
 func spawnFetcher(done <-chan struct{}, jobs <-chan *HTMLPage) (<-chan *HTMLPage, <-chan error) {
-	in := make(chan *HTMLPage, numFetcher) // fetcher get tasks from in
-	ret := make(chan *HTMLPage, numParser) // send HTML content to parser
+	in := make(chan *HTMLPage, config.NumFetcher) // fetcher get tasks from in
+	ret := make(chan *HTMLPage, config.NumParser) // send HTML content to parser
 	errc := make(chan error)
 
 	jobsLeft := new(int64)
@@ -204,7 +204,7 @@ func spawnFetcher(done <-chan struct{}, jobs <-chan *HTMLPage) (<-chan *HTMLPage
 			}
 		}
 	}()
-	for i := 0; i < numFetcher; i++ {
+	for i := 0; i < config.NumFetcher; i++ {
 		wg.Add(1)
 		go fetcher(done, &wg, jobsLeft, ret, in)
 	}

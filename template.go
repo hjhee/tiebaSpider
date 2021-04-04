@@ -35,8 +35,8 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 
 	// spawn renderers
 	var wg sync.WaitGroup
-	wg.Add(numRenderer)
-	for i := 0; i < numRenderer; i++ {
+	wg.Add(config.NumRenderer)
+	for i := 0; i < config.NumRenderer; i++ {
 		go func() {
 			defer wg.Done()
 			for {

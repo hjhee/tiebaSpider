@@ -35,7 +35,7 @@ func htmlParseWrapperFcn(done <-chan struct{}, pc *PageChannel, page *HTMLPage, 
 	if err != nil {
 		// network error, retry request
 		pc.Add(1)
-		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+		go addPageToFetchQueue(done, pc, time.Duration(config.RetryPeriod)*time.Second, page.URL, page.Type)
 		return fmt.Errorf("error parsing %s(title: %s): %v", page.URL, findTitle(doc), err)
 	}
 
@@ -45,7 +45,7 @@ func htmlParseWrapperFcn(done <-chan struct{}, pc *PageChannel, page *HTMLPage, 
 	if len(match) < 1 {
 		// network error, retry request
 		pc.Add(1)
-		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+		go addPageToFetchQueue(done, pc, time.Duration(config.RetryPeriod)*time.Second, page.URL, page.Type)
 		return fmt.Errorf("unable to parse page(title: %s), possibly a network error, readding url to queue %s", findTitle(doc), page.URL)
 	}
 	strInt, _ := strconv.ParseInt(match[1], 10, 64)
@@ -55,7 +55,7 @@ func htmlParseWrapperFcn(done <-chan struct{}, pc *PageChannel, page *HTMLPage, 
 	// page.Response.Body.Close()
 	if err != nil {
 		pc.Add(1)
-		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+		go addPageToFetchQueue(done, pc, time.Duration(config.RetryPeriod)*time.Second, page.URL, page.Type)
 	} else {
 		tf.AddPage(-1)
 		if tf.IsDone() {
@@ -279,7 +279,7 @@ func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 	if err != nil {
 		pc.Add(1)
 		tf.AddLzl(1)
-		go addPageToFetchQueue(done, pc, time.Duration(retryPeriod)*time.Second, page.URL, page.Type)
+		go addPageToFetchQueue(done, pc, time.Duration(config.RetryPeriod)*time.Second, page.URL, page.Type)
 	} else {
 		if tf.IsDone() {
 			// fmt.Fprintf(os.Stderr, "IsDone() in jsonParser: %d, %d\n", tf.lzlsLeft, tf.pagesLeft)
@@ -558,13 +558,13 @@ func parseHTML(done <-chan struct{}, pc *PageChannel) (<-chan *TemplateField, <-
 	tmMap := &TemplateMap{
 		Map:     make(map[uint64]*TemplateField),
 		lock:    &sync.RWMutex{},
-		Channel: make(chan *TemplateField, numRenderer),
+		Channel: make(chan *TemplateField, config.NumRenderer),
 	}
 	errc := make(chan error)
 
 	var wg sync.WaitGroup
-	wg.Add(numParser)
-	for i := 0; i < numParser; i++ {
+	wg.Add(config.NumParser)
+	for i := 0; i < config.NumParser; i++ {
 		go parser(done, errc, &wg, pc, tmMap)
 	}
 	go func() {

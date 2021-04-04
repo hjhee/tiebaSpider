@@ -3,19 +3,24 @@ package main
 import (
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
 	"time"
+
+	"github.com/pelletier/go-toml"
 )
 
-var numFetcher = 10
-var numParser = 50
-var numRenderer = 5
-var templateName = "template1.html"
+var config struct {
+	NumFetcher   int    `toml:"numFetcher"`
+	NumParser    int    `toml:"numParser"`
+	NumRenderer  int    `toml:"numRenderer"`
+	TemplateName string `toml:"templateName"`
+	RetryPeriod  int    `toml:"retryPeriod"`
+}
 
 var version = "debug"
-var retryPeriod = 10
 
 var outputTemplate *template.Template
 
@@ -32,7 +37,13 @@ func init() {
 	log.SetFlags(0)
 	log.SetOutput(new(logWriter))
 
-	outputPath := "./output"
+	dataStr, _ := ioutil.ReadFile("config.toml")
+	err := toml.Unmarshal(dataStr, &config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	outputPath := "output"
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		err = os.Mkdir(outputPath, 0755)
 		if err != nil {
@@ -40,10 +51,12 @@ func init() {
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "templateName: %s", config.TemplateName)
+
 	rand.Seed(time.Now().UnixNano())
 
 	// outputTemplate is used to render output
-	outputTemplate = template.Must(template.New(templateName).Funcs(
+	outputTemplate = template.Must(template.New(config.TemplateName).Funcs(
 		template.FuncMap{"convertTime": func(ts int64) string {
 			// convertTime converts unix timestamp to the following format
 			// How do I format an unix timestamp to RFC3339 - golang?
@@ -56,7 +69,8 @@ func init() {
 			// https://stackoverflow.com/a/20872724/6091246
 			return time.Unix(ts, 0).In(time.Local).Format("2006-01-02 15:04")
 		},
-		}).ParseFiles("template/" + templateName))
+		}).ParseFiles("template/" + config.TemplateName))
+
 }
 
 func main() {
