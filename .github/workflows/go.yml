@@ -43,3 +43,4 @@ jobs:
           README.md
           url.txt
           tiebaSpider.exe
+          config.toml

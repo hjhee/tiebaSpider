@@ -17,4 +17,4 @@ endif
 win: git-tree-check
 	@echo ver: ${GITVER}
 	@GOOS="windows" go build -ldflags "-X main.version=${GITVER}"
-	@zip win64.zip template/*.html tiebaSpider.exe LICENSE README.md url.txt
+	@zip win64.zip template/*.html tiebaSpider.exe LICENSE README.md url.txt config.toml
