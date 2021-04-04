@@ -1,5 +1,7 @@
 numFetcher = 10
 numParser = 50
 numRenderer = 5
+# "template1.html": 最简输出模板
+# "template2.html": 替换为高分辨率图片
 templateName = "template1.html"
 retryPeriod = 10

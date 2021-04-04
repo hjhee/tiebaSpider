@@ -59,7 +59,8 @@
           console.log(`image loading failed: ${imageName}`);
         };
         // console.log(imageName);
-        img.setAttribute('src', `http://tiebapic.baidu.com/forum/pic/item/${imageName}`);
+        src.pathname = '/forum/pic/item/' + imageName;
+        img.setAttribute('src', src.toString());
 
       }
     }

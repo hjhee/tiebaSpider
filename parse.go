@@ -50,6 +50,7 @@ func htmlParseWrapperFcn(done <-chan struct{}, pc *PageChannel, page *HTMLPage, 
 	}
 	strInt, _ := strconv.ParseInt(match[1], 10, 64)
 	threadID := uint64(strInt)
+	// TODO: wrap tf.Add method in order to substitute image with html embedded one
 	tf := tmMap.Get(threadID)
 	err = callback(tf, doc, posts)
 	// page.Response.Body.Close()
@@ -248,6 +249,11 @@ func wapParserFcn(page *HTMLPage, tf *TemplateField, doc *goquery.Document, post
 			}
 		}
 		res.Time = s.Find(".b").Text()
+		if tm, err := time.Parse(`1-2 15:04`, res.Time); err == nil {
+			// rewrite time from "1-22 13:07" to "2021-01-22 13:07" for consistency
+			tm = tm.AddDate(time.Now().Year(), 0, 0)
+			res.Time = tm.Format("2006-01-02 15:04")
+		}
 
 		tf.Append(&res)
 	})
@@ -272,7 +278,7 @@ func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 	}
 	ret, _ := strconv.Atoi(tid)
 	threadID := uint64(ret)
-
+	// TODO: wrap tf.Add method in order to substitute image with html embedded one
 	tf := tmMap.Get(threadID)
 	defer tf.AddLzl(-1)
 	err := callback(done, page, pc, tmMap, tf)
