@@ -6,7 +6,7 @@
   <meta charset="UTF-8">
   <script>
     function toggleLzl(thread_id) {
-      var x = document.getElementById('lzl' + thread_id);
+      let x = document.getElementById('lzl' + thread_id);
       if (x.style.display === 'none') {
         x.style.display = 'block';
       } else {
@@ -46,9 +46,12 @@
   </div>
   {{end}}
   <script>
-    function substitueRawImageSrc() {
+    function substituteRawImageSrc() {
       let imgs = document.getElementsByTagName('img');
       for (let img of imgs) {
+        if (img.src.startsWith('file://')) {
+          img.src = img.src.replace("file://","https://");
+        }
         let src = new URL(img.getAttribute('src'));
         // http://imgsa.baidu.com/forum/w%3D580/sign=fa9bff75584a20a4311e3ccfa0539847/2ca3b6096b63f624d2ed9e649044ebf81b4ca366.jpg
         if (src.hostname !== 'imgsa.baidu.com') {
@@ -65,7 +68,7 @@
 
       }
     }
-    substitueRawImageSrc();
+    substituteRawImageSrc();
   </script>
 </body>
 
