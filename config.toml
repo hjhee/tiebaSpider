@@ -5,6 +5,8 @@ numRenderer = 5
 # "template2.html": 替换为高分辨率图片
 templateName = "template1.html"
 retryPeriod = 10
+highResImage = true
+storeExternalResource = true
 # 人工处理百度安全认证
 userAgent = ""
 cookieString = ""

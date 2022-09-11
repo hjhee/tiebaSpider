@@ -19,6 +19,9 @@ var config struct {
 	TemplateName string `toml:"templateName"`
 	RetryPeriod  int    `toml:"retryPeriod"`
 
+	HighResImage          bool `toml:"highResImage"`
+	StoreExternalResource bool `toml:"storeExternalResource"`
+
 	UserAgent    string `toml:"userAgent"`
 	CookieString string `toml:"cookieString"`
 }
@@ -89,7 +92,7 @@ func main() {
 
 	pc, errcFetch := fetchHTMLList(done, "url.txt")
 	tempc, errcParse := parseHTML(done, pc)
-	outputc, errcRender := renderHTML(done, tempc, outputTemplate)
+	outputc, errcRender := renderHTML(done, pc, tempc, outputTemplate)
 
 	for {
 		// programme exits when all error channels are closed:

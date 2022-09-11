@@ -87,6 +87,10 @@ func fetchHTMLList(done <-chan struct{}, filename string) (*PageChannel, <-chan 
 
 			// log.Printf("[Fetch] Got new url from list: %v\n", u)
 
+			if config.StoreExternalResource {
+				pc.Add(1)
+			}
+
 			pc.Add(1)
 			select {
 			case pc.send <- &HTMLPage{URL: u, Type: pageType}:

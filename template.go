@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"os"
-	"regexp"
 	"sort"
 	"sync"
 )
@@ -29,7 +28,7 @@ func writeOutput(filename string, callback func(w *bufio.Writer) error) error {
 	return nil
 }
 
-func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *template.Template) (chan string, chan error) {
+func renderHTML(done <-chan struct{}, pc *PageChannel, tempc <-chan *TemplateField, tmpl *template.Template) (chan string, chan error) {
 	outputc := make(chan string)
 	errc := make(chan error)
 
@@ -49,6 +48,18 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 						return // no new task from parser, exit
 					}
 
+					if ret, err := postProcessing(done, pc, t); err != nil {
+						errc <- err
+						continue
+					} else if ret {
+						t.mutex.Lock()
+						if t.send {
+							t.send = false
+						}
+						t.mutex.Unlock()
+						continue
+					}
+
 					sort.Slice(t.Comments, func(a, b int) bool {
 						return t.Comments[a].PostNO < t.Comments[b].PostNO
 					})
@@ -63,12 +74,8 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 					// t.Merge()
 					// t.Unique()
 
-					// #6: remove illegal character in title
-					// ref: https://www.codeproject.com/tips/758861/removing-characters-which-are-not-allowed-in-windo
-					filenameRegex := regexp.MustCompile(`[\\/:*?""<>|]`)
-					validFilename := filenameRegex.ReplaceAllLiteralString(t.Title, "")
-
-					filename := fmt.Sprintf("output/file_%s.json", validFilename)
+					// log.Printf("writing file output/file_%s.json", t.FileName())
+					filename := fmt.Sprintf("output/file_%s.json", t.FileName())
 
 					b, err := json.Marshal(t)
 					if err != nil {
@@ -86,7 +93,7 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 						continue
 					}
 
-					filename = fmt.Sprintf("output/file_%s.html", validFilename)
+					filename = fmt.Sprintf("output/file_%s.html", t.FileName())
 					err = writeOutput(filename, func(w *bufio.Writer) error {
 						if err := tmpl.Execute(w, struct {
 							Title    string
@@ -105,6 +112,11 @@ func renderHTML(done <-chan struct{}, tempc <-chan *TemplateField, tmpl *templat
 					}
 
 					outputc <- filename // report finished task
+					t.SetRendered(true)
+
+					if config.StoreExternalResource {
+						pc.Del(1)
+					}
 				}
 			}
 		}()

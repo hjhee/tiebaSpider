@@ -4,6 +4,7 @@
 /tiebaSpider
 /tiebaSpider.exe
 /url.txt
+/*.zip
 
 ### VisualStudioCode template
 .vscode/*

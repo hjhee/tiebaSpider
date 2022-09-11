@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -10,10 +11,12 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -59,13 +62,7 @@ func htmlParseWrapperFcn(done <-chan struct{}, pc *PageChannel, page *HTMLPage, 
 		go addPageToFetchQueue(done, pc, time.Duration(config.RetryPeriod)*time.Second, page.URL, page.Type)
 	} else {
 		tf.AddPage(-1)
-		if tf.IsDone() {
-			// fmt.Fprintf(os.Stderr, "IsDone() in htmlParse: %d, %d\n", tf.lzlsLeft, tf.pagesLeft)
-			tf.Send(tmMap.Channel) // avoid duplicate task
-			// tmMap.Channel <- tf
-		}
 	}
-
 	return err
 }
 
@@ -86,8 +83,8 @@ func homePageParserFcn(done <-chan struct{}, pc *PageChannel, tf *TemplateField,
 		return fmt.Errorf("error parsing total number of pages: %v", err)
 	}
 
-	tf.pagesLeft = pageNum
-	tf.lzlsLeft = pageNum
+	atomic.StoreInt64(&tf.pagesLeft, pageNum)
+	atomic.StoreInt64(&tf.lzlsLeft, pageNum)
 	// fetch all comments and lzls, excluding comments in the first page
 	// pageNum - 1: html page 2~pageNum
 	// pageNum + 1: lzl page 0~pageNum
@@ -286,12 +283,6 @@ func jsonParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *Te
 		pc.Add(1)
 		tf.AddLzl(1)
 		go addPageToFetchQueue(done, pc, time.Duration(config.RetryPeriod)*time.Second, page.URL, page.Type)
-	} else {
-		if tf.IsDone() {
-			// fmt.Fprintf(os.Stderr, "IsDone() in jsonParser: %d, %d\n", tf.lzlsLeft, tf.pagesLeft)
-			tf.Send(tmMap.Channel) // avoid duplicate task
-			// tmMap.Channel <- tf
-		}
 	}
 	return err
 }
@@ -496,12 +487,40 @@ func templateParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 	var tf = tmMap.Get(threadID)
 
 	tf.mutex.Lock()
-	err := json.Unmarshal([]byte(string(page.Content)), tf)
+	err := json.Unmarshal(page.Content, tf)
 	tf.mutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("error parsing template file %s: %v", page.URL.String(), err)
 	}
-	tf.Send(tmMap.Channel)
+
+	return nil
+}
+
+func externalResourceParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap *TemplateMap) error {
+	defer pc.Del(1)
+	threadID := page.ThreadID
+	var tf = tmMap.Get(threadID)
+
+	dstPath := fmt.Sprintf("output/%s", page.Path)
+	// log.Printf("writing %s", dstPath)
+	outputPath := filepath.Dir(dstPath)
+	if err := os.MkdirAll(outputPath, 0755); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("error creating external resource folder (%s): %v", outputPath, err)
+	}
+	data := page.Content
+	if err := writeOutput(dstPath, func(w *bufio.Writer) error {
+		for len(data) > 0 {
+			n, err := w.Write(data)
+			if err != nil {
+				return err
+			}
+			data = data[n:]
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("error writing external resource (%s): %v", dstPath, err)
+	}
+	atomic.AddInt64(&tf.resLeft, -1)
 
 	return nil
 }
@@ -509,6 +528,7 @@ func templateParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, tmMap
 func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *PageChannel, tmMap *TemplateMap) {
 	defer wg.Done()
 	var err error
+	ticker := time.NewTicker(1 * time.Second)
 	for {
 		select {
 		case <-done:
@@ -553,10 +573,17 @@ func parser(done <-chan struct{}, errc chan<- error, wg *sync.WaitGroup, pc *Pag
 				if err != nil {
 					errc <- err
 				}
+			case HTMLExternalResource:
+				err = externalResourceParser(done, p, pc, tmMap)
+				if err != nil {
+					errc <- err
+				}
 			default:
 				errc <- errors.New("unkonwn HTMLPage Type")
 			}
+		case <-ticker.C:
 		}
+		go tmMap.Sweep(pc)
 	}
 }
 

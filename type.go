@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/url"
+	"regexp"
 	"sync"
 	"sync/atomic"
 )
@@ -81,6 +82,9 @@ const (
 
 	// HTMLWebWAPPage supports fetching wap posts
 	HTMLWebWAPPage
+
+	// HTMLExternalResource containes external resources (i.e. images)
+	HTMLExternalResource
 )
 
 // HTMLPage is a job for fetcher and parser
@@ -96,6 +100,11 @@ type HTMLPage struct {
 
 	// Close http.Response when finished parsing
 	// Response *http.Response
+
+	// Path where downloaded external resources are saved
+	Path string
+	// ThreadID links external resources to corresponding TemplateField
+	ThreadID uint64
 }
 
 // TiebaField parse "data-field" of each thread
@@ -190,6 +199,38 @@ func (lzl *LzlMap) IsExist(k uint64) bool {
 	return ok
 }
 
+// ExternalResourceMap keeps records of fetched external resources
+type ExternalResourceMap struct {
+	Map  map[string]interface{}
+	lock *sync.Mutex
+}
+
+func (erm *ExternalResourceMap) Get(k string) bool {
+	erm.lock.Lock()
+	defer erm.lock.Unlock()
+	if _, ok := erm.Map[k]; !ok {
+		return false
+	}
+	return true
+}
+
+func (erm *ExternalResourceMap) Set(k string) {
+	erm.lock.Lock()
+	defer erm.lock.Unlock()
+	erm.Map[k] = nil
+}
+
+func (erm *ExternalResourceMap) Put(k string) bool {
+	erm.lock.Lock()
+	defer erm.lock.Unlock()
+	ret := false
+	if _, ok := erm.Map[k]; !ok {
+		ret = true
+	}
+	erm.Map[k] = nil
+	return ret
+}
+
 // TemplateField stores all necessary information to render a HTML page
 type TemplateField struct {
 	Title     string
@@ -199,8 +240,29 @@ type TemplateField struct {
 	pagesLeft int64
 	Lzls      *LzlMap // Key is PostID
 	lzlsLeft  int64
+	resLeft   int64
 	mutex     *sync.RWMutex
 	send      bool
+	rendered  int64
+	resMap    *ExternalResourceMap
+}
+
+// NetTemplateField returns a initialized struct
+func NewTemplateField(threadID uint64) *TemplateField {
+	tf := &TemplateField{
+		ThreadID: threadID,
+		Comments: make([]*OutputField, 0, 30),
+		Lzls: &LzlMap{
+			Map:  make(map[uint64]*LzlComment),
+			lock: &sync.Mutex{},
+		},
+		mutex: &sync.RWMutex{},
+		resMap: &ExternalResourceMap{
+			Map:  make(map[string]interface{}),
+			lock: &sync.Mutex{},
+		},
+	}
+	return tf
 }
 
 // Send parsed Tieba posts to render
@@ -250,7 +312,13 @@ func (t *TemplateField) Append(post *OutputField) {
 func (t *TemplateField) IsDone() bool {
 	pagesLeft := atomic.LoadInt64(&t.pagesLeft)
 	lzlsLeft := atomic.LoadInt64(&t.lzlsLeft)
-	return pagesLeft <= 0 && lzlsLeft <= 0
+	ret := pagesLeft <= 0 && lzlsLeft <= 0
+	if config.StoreExternalResource {
+		resLeft := atomic.LoadInt64(&t.resLeft)
+		// log.Printf("%d: resLeft (%d)", t.ThreadID, resLeft)
+		ret = ret && (resLeft <= 0)
+	}
+	return ret
 }
 
 // Merge consecutive posts whose Useaname is the same
@@ -303,6 +371,28 @@ func (t *TemplateField) Unique() {
 	t.Comments = t.Comments[:j]
 }
 
+// Rendered returns true if the template is written to the output file
+func (t *TemplateField) Rendered() bool {
+	return atomic.LoadInt64(&t.rendered) != 0
+}
+
+// SetRendered could be used to change rendered status
+func (t *TemplateField) SetRendered(status bool) {
+	if status {
+		atomic.StoreInt64(&t.rendered, 1)
+	} else {
+		atomic.StoreInt64(&t.rendered, 0)
+	}
+}
+
+func (t *TemplateField) FileName() string {
+	// #6: remove illegal character in title
+	// ref: https://www.codeproject.com/tips/758861/removing-characters-which-are-not-allowed-in-windo
+	filenameRegex := regexp.MustCompile(`[\\/:*?""<>|]`)
+	validFilename := filenameRegex.ReplaceAllLiteralString(t.Title, "")
+	return validFilename
+}
+
 // TemplateMap manipulate a Tieba thread in parser
 type TemplateMap struct {
 	Map     map[uint64]*TemplateField // Key is ThreadID
@@ -320,15 +410,7 @@ func (tm *TemplateMap) Get(k uint64) *TemplateField {
 		tm.lock.RUnlock()
 		tm.lock.Lock()
 		if val, ok = tm.Map[k]; !ok {
-			val = &TemplateField{
-				ThreadID: k,
-				Comments: make([]*OutputField, 0, 30),
-				Lzls: &LzlMap{
-					Map:  make(map[uint64]*LzlComment),
-					lock: &sync.Mutex{},
-				},
-				mutex: &sync.RWMutex{},
-			}
+			val = NewTemplateField(k)
 			tm.Map[k] = val
 		}
 		tm.lock.Unlock()
@@ -336,4 +418,18 @@ func (tm *TemplateMap) Get(k uint64) *TemplateField {
 		tm.lock.RUnlock()
 	}
 	return val
+}
+
+// Sweep search threadIDs for elements ready for rendering
+func (tm *TemplateMap) Sweep(pc *PageChannel) {
+	tm.lock.RLock()
+	for k := range tm.Map {
+		tf := tm.Map[k]
+		if tf.IsDone() && !tf.Rendered() {
+			go tf.Send(tm.Channel)
+		}
+	}
+	tm.lock.RUnlock()
+
+	// TODO: delete rendered threads from TemplateMap
 }
