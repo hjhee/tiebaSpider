@@ -18,6 +18,9 @@ var config struct {
 	NumRenderer  int    `toml:"numRenderer"`
 	TemplateName string `toml:"templateName"`
 	RetryPeriod  int    `toml:"retryPeriod"`
+
+	UserAgent    string `toml:"userAgent"`
+	CookieString string `toml:"cookieString"`
 }
 
 var version = "debug"

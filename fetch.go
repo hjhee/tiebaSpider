@@ -216,7 +216,18 @@ func spawnFetcher(done <-chan struct{}, jobs <-chan *HTMLPage) (<-chan *HTMLPage
 }
 
 func fetchHTMLFromURL(page *HTMLPage) error {
-	resp, err := http.Get(page.URL.String())
+	req, err := http.NewRequest("GET", page.URL.String(), nil)
+	if err != nil {
+		return err
+	}
+	if config.UserAgent != "" {
+		req.Header.Add("User-Agent", config.UserAgent)
+	}
+	if config.CookieString != "" {
+		req.Header.Add("Cookie", config.CookieString)
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
