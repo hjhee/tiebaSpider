@@ -160,9 +160,10 @@ func pageParserFcn(page *HTMLPage, tf *TemplateField, doc *goquery.Document, pos
 		// get post time
 		// Jquery过滤选择器，选择前几个元素，后几个元素，内容过滤选择器等
 		// http://www.cnblogs.com/alone2015/p/4962687.html
-		res.Time = s.Find("span.tail-info:nth-child(4)").Text() // posted from device other than PC
-		if res.Time == "" {
-			res.Time = s.Find("span.tail-info:nth-child(3)").Text() // posted from PC
+		for _, elem := range s.Find("span.tail-info").EachIter() {
+			if tm, err := time.Parse(`2006-01-02 15:04`, elem.Text()); err == nil {
+				res.Time = tm.Format("2006-01-02 15:04")
+			}
 		}
 
 		tf.Append(&res)
@@ -375,6 +376,9 @@ func totalCommentParser(done <-chan struct{}, page *HTMLPage, pc *PageChannel, t
 				comment.Index = int64(i)
 				comment.Time = time.Unix(comment.Timestamp, 0).In(time.Local).Format("2006-01-02 15:04")
 				comment.UserName = handleUserNameEmojiURL(comment.UserName)
+				if config.ShowNickName && comment.UserNickname != "" {
+					comment.UserName = comment.UserNickname
+				}
 				comment.Content = template.HTML(reformatLzlUsername(string(comment.Content)))
 			}
 			// merge maps

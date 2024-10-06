@@ -9,6 +9,23 @@ import (
 	"sync/atomic"
 )
 
+// Config stores user specified configurations in config.toml
+type Config struct {
+	NumFetcher   int    `toml:"numFetcher"`
+	NumParser    int    `toml:"numParser"`
+	NumRenderer  int    `toml:"numRenderer"`
+	TemplateName string `toml:"templateName"`
+	RetryPeriod  int    `toml:"retryPeriod"`
+
+	HighResImage          bool `toml:"highResImage"`
+	StoreExternalResource bool `toml:"storeExternalResource"`
+
+	UserAgent    string `toml:"userAgent"`
+	CookieString string `toml:"cookieString"`
+
+	ShowNickName bool `toml:"showNickname"`
+}
+
 // PageChannel share HTML task between fetcher and parser
 type PageChannel struct {
 	// parser get HTML pages from rec
@@ -141,11 +158,12 @@ type LzlContent struct {
 	// 	ThreadID  uint64        `json:"thread_id,string"`
 	// 	PostID    uint64        `json:"post_id,string"`
 	// CommentID uint64        `json:"comment_id,string"`
-	Index     int64
-	UserName  string        `json:"username"`
-	Content   template.HTML `json:"content"`
-	Timestamp int64         `json:"now_time"`
-	Time      string
+	Index        int64
+	UserName     string        `json:"username"`
+	UserNickname string        `json:"show_nickname,omitempty"`
+	Content      template.HTML `json:"content"`
+	Timestamp    int64         `json:"now_time"`
+	Time         string
 }
 
 // LzlComment indicates the relationship between a Tieba posts and the attached Lzl comment

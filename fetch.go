@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -235,7 +235,7 @@ func fetchHTMLFromURL(page *HTMLPage) error {
 	if err != nil {
 		return err
 	}
-	bytes, err := ioutil.ReadAll(resp.Body)
+	bytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -252,7 +252,7 @@ func fetchHTMLFromFile(page *HTMLPage) error {
 	}
 	defer in.Close()
 	reader := bufio.NewReader(in)
-	bytes, err := ioutil.ReadAll(reader)
+	bytes, err := io.ReadAll(reader)
 	if err != nil {
 		return err
 	}

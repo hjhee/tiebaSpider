@@ -10,3 +10,6 @@ storeExternalResource = true
 # 人工处理百度安全认证
 userAgent = ""
 cookieString = ""
+
+# 显示用户昵称
+showNickname = true

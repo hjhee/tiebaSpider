@@ -31,7 +31,7 @@ func TestTotalCommentParserFcn(t *testing.T) {
 			userNameHtml, _ := s.Html()
 			// t.Errorf(userNameHtml)
 			s.ReplaceWithHtml(userNameHtml)
-			t.Errorf(bodyDOM.Html())
+			t.Logf(bodyDOM.Html())
 		}
 	}, func(string, string, string) {})
 }

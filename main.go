@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
@@ -12,19 +11,7 @@ import (
 	"github.com/pelletier/go-toml"
 )
 
-var config struct {
-	NumFetcher   int    `toml:"numFetcher"`
-	NumParser    int    `toml:"numParser"`
-	NumRenderer  int    `toml:"numRenderer"`
-	TemplateName string `toml:"templateName"`
-	RetryPeriod  int    `toml:"retryPeriod"`
-
-	HighResImage          bool `toml:"highResImage"`
-	StoreExternalResource bool `toml:"storeExternalResource"`
-
-	UserAgent    string `toml:"userAgent"`
-	CookieString string `toml:"cookieString"`
-}
+var config Config
 
 var version = "debug"
 
@@ -43,7 +30,7 @@ func init() {
 	log.SetFlags(0)
 	log.SetOutput(new(logWriter))
 
-	dataStr, _ := ioutil.ReadFile("config.toml")
+	dataStr, _ := os.ReadFile("config.toml")
 	err := toml.Unmarshal(dataStr, &config)
 	if err != nil {
 		log.Fatal(err)
@@ -59,7 +46,7 @@ func init() {
 
 	fmt.Fprintf(os.Stderr, "templateName: %s", config.TemplateName)
 
-	rand.Seed(time.Now().UnixNano())
+	rand.Seed(41)
 
 	// outputTemplate is used to render output
 	outputTemplate = template.Must(template.New(config.TemplateName).Funcs(
