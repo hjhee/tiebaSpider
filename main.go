@@ -7,11 +7,9 @@ import (
 	"math/rand"
 	"os"
 	"time"
-
-	"github.com/pelletier/go-toml"
 )
 
-var config Config
+var config *Config
 
 var version = "debug"
 
@@ -30,9 +28,8 @@ func init() {
 	log.SetFlags(0)
 	log.SetOutput(new(logWriter))
 
-	dataStr, _ := os.ReadFile("config.toml")
-	err := toml.Unmarshal(dataStr, &config)
-	if err != nil {
+	config = &Config{}
+	if err := config.Parse("config.toml"); err != nil {
 		log.Fatal(err)
 	}
 
@@ -77,6 +74,11 @@ func main() {
 	done := make(chan struct{})
 	defer close(done)
 
+	err, errcConfig := config.Watch()
+	if err != nil {
+		panic(err)
+	}
+
 	pc, errcFetch := fetchHTMLList(done, "url.txt")
 	tempc, errcParse := parseHTML(done, pc)
 	outputc, errcRender := renderHTML(done, pc, tempc, outputTemplate)
@@ -93,6 +95,11 @@ func main() {
 		select {
 		case <-done:
 			break parseSelect
+		case err, ok := <-errcConfig:
+			if !ok {
+				log.Fatalf("[Cofnig] Config watcher encountered error")
+			}
+			fmt.Fprintf(os.Stderr, "[Config] Config watcher encountered error: %v\n", err)
 		case err, ok := <-errcFetch:
 			if !ok {
 				errcFetch = nil

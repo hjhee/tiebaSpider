@@ -2,11 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"html/template"
 	"net/url"
+	"os"
 	"regexp"
 	"sync"
 	"sync/atomic"
+
+	"github.com/fsnotify/fsnotify"
+	"github.com/pelletier/go-toml"
 )
 
 // Config stores user specified configurations in config.toml
@@ -24,6 +29,59 @@ type Config struct {
 	CookieString string `toml:"cookieString"`
 
 	ShowNickName bool `toml:"showNickname"`
+
+	watcher *fsnotify.Watcher
+}
+
+func (c *Config) Parse(path string) error {
+	dataStr, _ := os.ReadFile(path)
+	err := toml.Unmarshal(dataStr, c)
+	return err
+}
+
+func (c *Config) Watch() (error, <-chan error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err, nil
+	}
+	c.watcher = watcher
+	err = c.watcher.Add(".")
+	if err != nil {
+		return err, nil
+	}
+
+	errChan := make(chan error)
+
+	// Start listening for events.
+	go func() {
+		defer c.watcher.Close()
+		for {
+			select {
+			case event, ok := <-c.watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Has(fsnotify.Write) {
+					if event.Name == "./config.toml" {
+						cc := &Config{}
+						if err := cc.Parse("config.toml"); err == nil {
+							c.UserAgent = cc.UserAgent
+							c.CookieString = cc.CookieString
+						} else {
+							errChan <- errors.Join(errors.New("failed to parse config.toml"), err)
+						}
+					}
+				}
+			case err, ok := <-c.watcher.Errors:
+				if !ok {
+					return
+				}
+				errChan <- err
+			}
+		}
+	}()
+
+	return nil, errChan
 }
 
 // PageChannel share HTML task between fetcher and parser
